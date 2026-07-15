@@ -1,0 +1,32 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - GENERATION_MODEL=claude-haiku-4-5
+      - JUDGE_MODEL=claude-sonnet-4-5
+    volumes:
+      # monta o código para hot-reload em desenvolvimento (opcional)
+      - ./src:/app/src
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  # Serviço opcional: Postgres + pgvector como vector store denso.
+  # Descomente e ajuste DATABASE_URL no .env para usar em vez do ChromaDB local.
+  # db:
+  #   image: pgvector/pgvector:pg16
+  #   environment:
+  #     POSTGRES_USER: copom
+  #     POSTGRES_PASSWORD: copom
+  #     POSTGRES_DB: copom_rag
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+
+# volumes:
+#   pgdata:

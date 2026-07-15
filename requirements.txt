@@ -1,0 +1,19 @@
+# --- API / serving ---
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+
+# --- Retrieval ---
+chromadb>=0.5          # vector store denso (alternativa: pgvector via psycopg)
+rank-bm25>=0.2.2       # retrieval esparso (BM25)
+# pgvector>=0.3        # descomente se optar por Postgres + pgvector
+# psycopg[binary]>=3.2
+
+# --- LLM ---
+anthropic>=0.40        # geração + LLM-as-judge (Claude)
+
+# --- Observability / utilidades ---
+python-dotenv>=1.0
+
+# --- Testes / CI ---
+pytest>=8.0

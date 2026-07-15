@@ -1,0 +1,433 @@
+---
+title: "COPOM RAG Service — RAG sobre Atas do Copom + Focus, Servido como API com Eval Harness e Observability"
+date: "2026-07-14"
+categories: [Python, FastAPI, Docker, RAG, LLM, Anthropic Claude, BM25, ChromaDB, pgvector, LLM-as-judge, CI, Observability, Política Monetária, Banco Central, Macroeconomia]
+description: "Serviço de RAG sobre as atas do Copom e o boletim Focus, exposto como API (FastAPI + Docker), com eval harness (golden set + LLM-as-judge + gate de CI que falha se a qualidade regride) e observability de custo, latência e tokens por request."
+image: "copom-rag-service-capa.png"
+execute:
+  eval: false
+  echo: true
+---
+
+![COPOM RAG Service — RAG servido como API, com eval harness e observability](copom-rag-service-capa.png){width=100%}
+
+::: {.callout-note}
+## 🚧 Projeto em desenvolvimento
+
+Esta é a **ficha técnica** de um projeto em construção ativa. O esqueleto é
+rodável — imports corretos, contratos (Pydantic) definidos, fluxo do eval
+harness completo —, mas o **retrieval real e as chamadas ao LLM estão marcados
+como `TODO` explícitos**. O objetivo desta ficha é registrar a **arquitetura e a
+tese de engenharia** do projeto antes da implementação completa.
+:::
+
+## Visão Geral
+
+Este projeto implementa, seguindo a metodologia **CRISP-DM** (*Cross-Industry
+Standard Process for Data Mining*), um **serviço de RAG** (*Retrieval-Augmented
+Generation*) sobre as **atas do Comitê de Política Monetária (Copom)** e o
+**boletim Focus** do Banco Central do Brasil, exposto como **API** (FastAPI +
+Docker).
+
+A pergunta do usuário — em linguagem natural, sobre política monetária
+brasileira — é respondida com fundamentação recuperada das atas e do Focus, e a
+resposta **cita as fontes** usadas. Em um domínio onde um número errado (Selic,
+meta de inflação, projeção) é uma falha grave, auditabilidade e ausência de
+alucinação são requisitos, não enfeites.
+
+O diferencial do projeto, contudo, **não é o RAG em si** — é a **engenharia de
+qualidade ao redor dele**:
+
+- um **eval harness** com *golden set*, **LLM-as-judge** e um **gate de CI** que
+  **falha (exit 1)** se a qualidade média regride;
+- **observability** de custo, latência e *tokens* medidos **por request**;
+- empacotamento como **API + Docker**, pronto para subir com um comando.
+
+::: {.callout-tip}
+## Tese central
+
+Um RAG de política monetária não se prova por uma *demo* bonita — prova-se por
+**não regredir**. A postura de engenharia deste projeto é tratar qualidade de
+resposta como um **contrato verificável em CI**: o *golden set* + LLM-as-judge
+produzem um score agregado, e nenhuma mudança entra sem que a média se mantenha
+acima do *threshold*. O **código-âncora** do card é, portanto, o `run_eval.py` —
+o *gate* que transforma "parece bom" em "passou ou falhou".
+:::
+
+---
+
+## Motivação
+
+Sistemas de RAG são fáceis de montar e difíceis de manter honestos. Uma troca de
+modelo, um ajuste de *prompt*, uma mudança no *chunking* ou no *reranker* podem
+melhorar três respostas e piorar outras dez — sem que ninguém perceba até um
+usuário reclamar. No domínio de **comunicação de banco central**, o custo de uma
+resposta errada é alto: números de política monetária são citados, comparados e
+usados para tomar decisões.
+
+O projeto responde a três perguntas práticas de engenharia de LLM:
+
+1. **Como impedir regressão de qualidade** em um serviço de RAG a cada mudança?
+2. **Quanto custa, quão rápido e quantos *tokens* consome** cada resposta em
+   produção?
+3. **Como garantir auditabilidade** — que cada resposta seja rastreável às atas
+   ou ao Focus que a fundamentam?
+
+---
+
+## Metodologia — CRISP-DM
+
+O projeto foi estruturado seguindo o processo **CRISP-DM**, adaptado ao contexto
+de **engenharia de LLM / RAG aplicado à comunicação de bancos centrais**.
+
+| Fase | Aplicação no Projeto |
+|---|---|
+| **1. Entendimento do Negócio** | Responder perguntas sobre política monetária com fundamentação auditável (fontes citadas) e sem alucinação numérica; definir qualidade como contrato verificável em CI |
+| **2. Entendimento dos Dados** | Atas do Copom (API BCB) + boletim Focus; textos com jargão de política monetária (meta de inflação, hiato do produto, cenários) e números sensíveis (Selic, projeções) |
+| **3. Preparação dos Dados** | *Chunking* das atas/Focus, indexação **esparsa** (BM25) e **densa** (embeddings) em *vector store* (ChromaDB ou pgvector) |
+| **4. Modelagem** | **Retrieval híbrido** BM25 + denso com **reranking** → *prompt* → geração via Claude, com saída estruturada (resposta + fontes) via Pydantic |
+| **5. Avaliação** | **Eval harness**: *golden set* + **LLM-as-judge** (score $0$–$1$ + *rationale*) + **gate de CI** que falha em regressão de qualidade |
+| **6. Implantação** | **API FastAPI + Docker/compose**; **observability** de custo/latência/*tokens* por *request* |
+
+---
+
+## Arquitetura
+
+```{mermaid}
+flowchart LR
+  Q[POST /ask<br>pergunta] --> API[FastAPI]
+  API --> PIPE[RAGPipeline]
+
+  subgraph Retrieval híbrido
+    PIPE --> BM25[BM25<br>esparso]
+    PIPE --> DENSE[Denso<br>vector store]
+    BM25 --> FUSE[Fusão RRF]
+    DENSE --> FUSE
+    FUSE --> RR[Reranker]
+  end
+
+  RR --> GEN[LLM Claude<br>gerar resposta + fontes]
+  GEN --> API
+  API --> R[resposta + fontes]
+
+  subgraph CI e Qualidade
+    GS[(golden_set.jsonl)] --> RUN[run_eval.py]
+    RUN --> PIPE2[RAGPipeline]
+    PIPE2 --> JUDGE[LLM-as-judge<br>score 0-1]
+    JUDGE --> GATE{média maior ou igual<br>ao threshold?}
+    GATE -->|não| FAIL[exit 1 — CI falha]
+    GATE -->|sim| PASS[exit 0]
+  end
+
+  API -. custo / latência / tokens .-> OBS[obs/tracing]
+```
+
+---
+
+## 1. Entendimento do Negócio
+
+### 1.1 Problema
+
+Servir um assistente de RAG sobre política monetária é, antes de tudo, um
+problema de **confiabilidade**. A comunicação do Copom concentra, em escolhas
+sutis de linguagem e em números precisos, informação relevante sobre a direção
+da Selic. Um serviço que responda a perguntas sobre esse material precisa ser
+**fundamentado** (cada resposta apoiada em trechos reais), **auditável** (fontes
+citadas) e **estável** (qualidade que não regride a cada mudança de *prompt*,
+modelo ou *retriever*).
+
+### 1.2 Objetivos
+
+1. Expor um endpoint `POST /ask` que responde a perguntas sobre as atas do Copom
+   e o Focus **com fontes citadas**;
+2. Construir um **eval harness** que meça a qualidade das respostas de forma
+   objetiva e a **transforme em gate de CI**;
+3. Instrumentar **custo, latência e tokens** por *request*;
+4. Empacotar tudo como **API + Docker** reprodutível.
+
+### 1.3 Critérios de sucesso
+
+| Critério | Meta |
+|---|---|
+| Fundamentação | Toda resposta cita ao menos uma fonte (ata/Focus) |
+| Qualidade agregada | Média do LLM-as-judge $\geq$ *threshold* (default $0{,}70$) |
+| Gate de regressão | CI falha (exit 1) quando a média cai abaixo do *threshold* |
+| Abstenção | Sem informação no contexto, o serviço declara "não sei" — nunca inventa números |
+| Observabilidade | Custo, latência e *tokens* registrados por *request* |
+| Reprodutibilidade | `docker compose up` sobe a API; `python -m eval.run_eval` roda o gate |
+
+---
+
+## 2. Entendimento dos Dados
+
+### 2.1 Fontes
+
+| Fonte | Origem | Dados |
+|---|---|---|
+| **Atas do Copom** | API pública do BCB | Texto integral das atas (diagnóstico, cenários, riscos, decisão) |
+| **Boletim Focus** | API pública do BCB | Expectativas de mercado (IPCA, Selic, PIB, câmbio) |
+
+### 2.2 Natureza do corpus
+
+O material combina **jargão técnico de política monetária** — meta para a
+inflação, hiato do produto, ancoragem de expectativas, cenários de referência —
+com **números sensíveis** (meta Selic, projeções de inflação, intervalos de
+tolerância). Essa mistura tem duas implicações diretas para o *retrieval*:
+
+- a **correspondência léxica exata** importa (termos técnicos, nomes de
+  reuniões), o que motiva o componente **BM25**;
+- a **similaridade semântica** também importa (paráfrases, sinônimos, perguntas
+  em linguagem coloquial), o que motiva o componente **denso**.
+
+Daí a opção por **retrieval híbrido**.
+
+---
+
+## 3. Preparação dos Dados
+
+### 3.1 Ingestão e *chunking*
+
+As atas e o Focus são coletados via API do BCB, limpos e segmentados em *chunks*
+com metadados de proveniência (identificador da fonte, data da reunião, seção).
+O identificador de fonte (ex.: `ata_265`, `focus_2026-07-11`) é o que permite a
+**citação rastreável** na resposta final.
+
+### 3.2 Indexação em dois níveis
+
+| Índice | Tecnologia | Sinal |
+|---|---|---|
+| **Esparso** | `rank-bm25` | Correspondência léxica de termos técnicos |
+| **Denso** | ChromaDB ou pgvector | Similaridade semântica (embeddings) |
+
+### 3.3 Decisões de preparação
+
+| Decisão | Valor | Justificativa |
+|---|---|---|
+| *Vector store* | ChromaDB (local) ou pgvector | Local para desenvolvimento; pgvector para produção com Postgres |
+| Metadado de fonte | Obrigatório por *chunk* | Sem ele não há citação auditável |
+| Fusão de candidatos | Reciprocal Rank Fusion | Combina BM25 + denso sem calibrar escalas de score |
+
+---
+
+## 4. Modelagem
+
+### 4.1 Retrieval híbrido com reranking
+
+O `HybridRetriever` (`src/rag/retriever.py`) orquestra três componentes:
+
+1. **`BM25Retriever`** — top-k por score BM25 (esparso);
+2. **`DenseRetriever`** — top-k por similaridade semântica no *vector store*;
+3. **`Reranker`** — reordena o conjunto fundido (RRF) pelos `top_n` mais
+   relevantes à pergunta (cross-encoder ou reranking via LLM).
+
+### 4.2 Pipeline de geração
+
+O `RAGPipeline` (`src/rag/pipeline.py`) executa o fluxo
+**retrieve → montar prompt → gerar**, com *system prompt* que exige
+fundamentação e proíbe invenção de números:
+
+```python
+class RAGAnswer(BaseModel):
+    answer: str
+    sources: list[str]           # fontes citadas — auditabilidade
+    model: str = "claude-haiku-4-5"
+```
+
+A saída estruturada via **Pydantic** garante que a API sempre devolva um objeto
+com `answer` **e** `sources`.
+
+### 4.3 API
+
+O endpoint `POST /ask` (`src/app/main.py`) recebe `{"question": "..."}` e
+devolve `{"answer": ..., "sources": [...], "model": ...}`. Cada chamada é
+envolvida em um *span* de *tracing* (custo/latência/tokens).
+
+---
+
+## 5. Avaliação — o Código-Âncora
+
+Esta é a fase que define o card. A qualidade das respostas é tratada como um
+**contrato verificável em CI**, não como impressão subjetiva.
+
+### 5.1 Golden set
+
+`src/eval/golden_set.jsonl` reúne **perguntas reais sobre o Copom** com resposta
+esperada (gabarito) e *tags*. Exemplos: o objetivo do regime de metas, o que é
+um tom *hawkish*, a relação entre Focus e Copom, a diferença entre meta Selic e
+Selic efetiva, o papel do hiato do produto — e um caso deliberado de
+**abstenção** (o que o serviço deve fazer quando a resposta não está no
+contexto).
+
+### 5.2 LLM-as-judge
+
+`src/eval/judge.py` implementa um **juiz LLM** que, dado o trio
+`(pergunta, resposta_gerada, resposta_esperada)`, emite um **score contínuo em
+$[0, 1]$** e uma **justificativa**, com saída estruturada via Pydantic:
+
+```python
+class JudgeVerdict(BaseModel):
+    score: float = Field(ge=0.0, le=1.0)
+    rationale: str
+    hallucination: bool = False
+```
+
+O juiz penaliza fortemente **números incorretos** — coerente com a natureza do
+domínio.
+
+### 5.3 Runner e gate de CI
+
+`src/eval/run_eval.py` é o **coração** do projeto. Ele:
+
+1. lê o *golden set*;
+2. roda **cada pergunta pelo pipeline** (`RAGPipeline.run`);
+3. **avalia cada resposta com o juiz** (`Judge.score`);
+4. **agrega** os scores (média, mínimo, contagem de alucinações);
+5. imprime um **relatório**;
+6. **sai com exit code 1** se a média ficar abaixo do *threshold*.
+
+```bash
+python -m eval.run_eval                  # threshold padrão (0.70)
+python -m eval.run_eval --threshold 0.75 # gate customizado
+```
+
+Plugado no CI (uma *GitHub Action* a cada PR), esse exit code **bloqueia o merge**
+quando a qualidade regride.
+
+::: {.callout-note}
+## Por que o eval reprova por padrão (e isso é correto)
+
+Enquanto o pipeline for *stub*, o juiz retorna score $0{,}0$ e o gate **reprova**.
+Isso é intencional: **um sistema vazio deve falhar o gate**. O eval só passa a
+"passar" quando o retrieval e a geração reais forem conectados e produzirem
+respostas de fato boas — exatamente o comportamento que se quer de um *test
+harness*.
+:::
+
+### 5.4 Observability
+
+`src/obs/tracing.py` oferece um *context manager* `trace(...)` que mede
+**latência**, agrega **tokens** (entrada + saída) e estima **custo** em US$ a
+partir da tabela de preços do modelo, por *request*. É o instrumento que responde
+"quanto custa e quão rápido é cada resposta em produção".
+
+---
+
+## 6. Implantação
+
+O serviço é empacotado como **API FastAPI + Docker**:
+
+- `Dockerfile` — imagem `python:3.11-slim` com *healthcheck* no `/health`;
+- `docker-compose.yml` — sobe a API (e, opcionalmente, um Postgres + pgvector
+  como *vector store*);
+- `uvicorn app.main:app` como *entrypoint*.
+
+```bash
+docker compose up --build
+```
+
+---
+
+## Estrutura do Projeto
+
+```
+COPOM_RAG_Service/
+│
+├── src/
+│   ├── app/main.py            # FastAPI, endpoint POST /ask (stub)
+│   ├── rag/
+│   │   ├── retriever.py       # BM25 + denso + reranking (stubs de classe)
+│   │   └── pipeline.py        # orquestra retrieve → prompt → gerar (stub)
+│   ├── eval/
+│   │   ├── golden_set.jsonl   # perguntas reais do Copom + gabarito
+│   │   ├── judge.py           # LLM-as-judge → score [0,1] + rationale
+│   │   └── run_eval.py        # CORAÇÃO: roda golden set, agrega, gate exit 1
+│   └── obs/tracing.py         # context manager de custo/latência/tokens
+│
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
+├── CLAUDE.md
+│
+└── portfolio/                 # divulgação CRISP-DM
+    ├── copom-rag-service.qmd  # ESTE arquivo
+    └── _TEMPLATE.md
+```
+
+---
+
+## Tecnologias
+
+| Camada | Tecnologia |
+|---|---|
+| **API** | FastAPI + uvicorn |
+| **Contratos / saída estruturada** | Pydantic v2 |
+| **Retrieval esparso** | `rank-bm25` |
+| **Retrieval denso** | ChromaDB (ou pgvector) |
+| **LLM (geração + juiz)** | Anthropic Claude |
+| **Observability** | *context manager* próprio (`obs/tracing.py`) |
+| **Testes / CI** | pytest |
+| **Empacotamento** | Docker + docker-compose |
+| **Ambiente** | `python-dotenv` |
+
+---
+
+## Como Executar Localmente
+
+### Pré-requisitos
+
+- Python 3.11+
+- Chave de API da Anthropic
+- Docker (opcional)
+
+### Instalação
+
+```bash
+git clone https://github.com/vitorwilher/copom-rag-service.git
+cd copom-rag-service
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env   # edite com sua ANTHROPIC_API_KEY
+```
+
+### Subir a API
+
+```bash
+cd src
+uvicorn app.main:app --reload --port 8000
+```
+
+### Rodar o eval harness (o gate)
+
+```bash
+cd src
+python -m eval.run_eval
+```
+
+---
+
+## Próximos Passos
+
+1. **Ingestão** — coletar e *chunkar* atas do Copom (API BCB) e o Focus; indexar em BM25 + *vector store*.
+2. **Retrieval real** — implementar BM25, denso e fusão RRF + reranking.
+3. **Geração** — conectar o Claude no pipeline com saída estruturada (resposta + fontes).
+4. **LLM-as-judge real** — chamada ao Claude com *schema* Pydantic de `JudgeVerdict`.
+5. **CI** — *GitHub Action* rodando `run_eval` a cada PR, bloqueando merge em regressão.
+6. **Observability** — exportar métricas do *tracing* para *backend* (OpenTelemetry / Langfuse / Prometheus).
+7. **Golden set** — expandir para 30–50 perguntas, incluindo casos adversariais e de abstenção.
+8. **Avaliação de retrieval** — métricas de recuperação (recall@k, MRR) além do juiz de resposta final.
+
+---
+
+## Referências
+
+- Lewis, P. et al. (2020). *Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks*. NeurIPS.
+- Robertson, S.; Zaragoza, H. (2009). *The Probabilistic Relevance Framework: BM25 and Beyond*. Foundations and Trends in Information Retrieval.
+- Cormack, G. V.; Clarke, C. L. A.; Büttcher, S. (2009). *Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods*. SIGIR.
+- Zheng, L. et al. (2023). *Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena*. NeurIPS.
+- Es, S. et al. (2024). *RAGAS: Automated Evaluation of Retrieval Augmented Generation*. EACL.
+- Blinder, A. S.; Ehrmann, M.; Fratzscher, M.; De Haan, J.; Jansen, D.-J. (2008). *Central Bank Communication and Monetary Policy*. Journal of Economic Literature, 46(4), 910–945.
+- Wirth, R.; Hipp, J. (2000). *CRISP-DM: Towards a Standard Process Model for Data Mining*.

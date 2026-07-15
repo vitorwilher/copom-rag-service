@@ -1,0 +1,55 @@
+# Artefatos intermediários do Quarto
+*.quarto_ipynb
+*.quarto_ipynb_*
+.quarto/
+_freeze/
+_files/
+
+# Builds e PDFs gerados
+# (descomente se quiser que os PDFs fiquem fora do repo)
+# *.pdf
+
+# Caches de Python
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.venv/
+venv/
+.pytest_cache/
+
+# Variáveis de ambiente
+.env
+.env.local
+
+# Vector store / índices locais (dados derivados, regeneráveis)
+.chroma/
+chroma_db/
+*.sqlite3
+data/index/
+
+# Snapshots ad-hoc de sessão (releases formais ficam em versions/)
+_rollback/
+
+# Material legado
+archive/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# RStudio
+.Rhistory
+.RData
+.Ruserdata
