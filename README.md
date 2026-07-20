@@ -1,9 +1,14 @@
 # COPOM RAG Service — RAG sobre Atas do Copom + Focus, servido como API
 
+[![Página do projeto](https://img.shields.io/badge/página-vitorwilher.github.io-2563eb)](https://vitorwilher.github.io/copom-rag-service/)
 [![Status](https://img.shields.io/badge/status-em%20desenvolvimento-orange)](CLAUDE.md)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688)](https://fastapi.tiangolo.com/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+![Arquitetura do COPOM RAG Service](portfolio/copom-rag-service-capa.png)
+
+> 📄 **Ficha técnica (CRISP-DM):** <https://vitorwilher.github.io/copom-rag-service/>
 
 Serviço de **RAG (Retrieval-Augmented Generation)** sobre as **atas do Comitê de
 Política Monetária (Copom)** e o **boletim Focus** do Banco Central do Brasil,

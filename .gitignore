@@ -4,6 +4,7 @@
 .quarto/
 _freeze/
 _files/
+_site/
 
 # Builds e PDFs gerados
 # (descomente se quiser que os PDFs fiquem fora do repo)
@@ -53,3 +54,6 @@ archive/
 .Rhistory
 .RData
 .Ruserdata
+
+/.quarto/
+**/*.quarto_ipynb

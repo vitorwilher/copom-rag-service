@@ -1,0 +1,75 @@
+---
+title: "COPOM RAG Service"
+subtitle: "RAG sobre as atas do Copom + Focus, servido como API — com **eval harness** (gate de CI) e **observability**"
+image: portfolio/copom-rag-service-capa.png
+toc: false
+lang: pt-BR
+---
+
+![Arquitetura do COPOM RAG Service — do `POST /ask` à resposta com fontes citadas, e o eval harness que reprova regressão de qualidade em CI.](portfolio/copom-rag-service-capa.png){width=100%}
+
+::: {.callout-note}
+## 🚧 Projeto em desenvolvimento
+O esqueleto é rodável — imports corretos, contratos (Pydantic) definidos, fluxo
+do eval harness completo. O **retrieval real e as chamadas ao LLM** estão marcados
+como `TODO` explícitos. Esta página registra a **arquitetura e a tese de
+engenharia** do projeto.
+:::
+
+## Em uma frase
+
+Um serviço de **RAG** (*Retrieval-Augmented Generation*) sobre as **atas do
+Copom** e o **boletim Focus** do Banco Central, exposto como **API** (FastAPI +
+Docker): você pergunta em linguagem natural sobre política monetária brasileira e
+recebe uma resposta fundamentada, **com as fontes citadas**.
+
+## A tese central
+
+Um RAG de política monetária **não se prova por uma demo bonita — prova-se por
+não regredir.** Em um domínio onde um número errado (Selic, meta de inflação,
+projeção) é uma falha grave, o diferencial não é o retrieval em si, e sim a
+**engenharia de qualidade ao redor dele**:
+
+::: {.grid}
+
+::: {.g-col-12 .g-col-md-4}
+### 1. Eval harness &nbsp;⭐
+O **código-âncora**. *Golden set* de perguntas reais sobre o Copom +
+**LLM-as-judge** (score 0–1) + um **gate de CI que falha (`exit 1`)** se a
+qualidade média regride abaixo do *threshold*. Qualidade tratada como **contrato
+verificável**, não como impressão subjetiva.
+:::
+
+::: {.g-col-12 .g-col-md-4}
+### 2. Observability
+Custo, latência e *tokens* medidos **por request** — a resposta objetiva para
+"quanto custa e quão rápido é cada chamada em produção".
+:::
+
+::: {.g-col-12 .g-col-md-4}
+### 3. API + Docker
+Endpoint `POST /ask` (pergunta → resposta + fontes) empacotado para **subir com
+um comando** (`docker compose up`).
+:::
+
+:::
+
+## Por que isso importa
+
+Sistemas de RAG são fáceis de montar e difíceis de manter honestos. Uma troca de
+modelo, um ajuste de *prompt* ou uma mudança no *chunking* podem melhorar três
+respostas e piorar outras dez — sem que ninguém perceba até um usuário reclamar.
+O gate de CI existe justamente para **bloquear o merge** quando a média dos
+scores cai. Enquanto o pipeline for *stub*, o juiz retorna `0.0` e o gate
+**reprova** — como deve ser: um sistema vazio precisa falhar o teste.
+
+## Explore
+
+- 📄 **[Ficha Técnica completa (CRISP-DM)](portfolio/copom-rag-service.qmd)** — as
+  seis fases do projeto, decisões de arquitetura e o código-âncora em detalhe.
+- 💻 **[Repositório no GitHub](https://github.com/vitorwilher/copom-rag-service)** —
+  código, `Dockerfile` e o `run_eval.py`.
+
+---
+
+Autor: **Vítor Wilher** · Análise Macro · frente de portfólio **AI/LLM Engineer**.

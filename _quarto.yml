@@ -1,0 +1,44 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - index.qmd
+    - portfolio/copom-rag-service.qmd
+
+website:
+  title: "COPOM RAG Service"
+  description: >-
+    RAG sobre as atas do Copom e o boletim Focus, servido como API,
+    com eval harness (gate de CI) e observability.
+  site-url: "https://vitorwilher.github.io/copom-rag-service/"
+  repo-url: "https://github.com/vitorwilher/copom-rag-service"
+  favicon: portfolio/copom-rag-service-capa.png
+  open-graph: true
+  twitter-card: true
+  navbar:
+    background: primary
+    left:
+      - href: index.qmd
+        text: "Início"
+      - href: portfolio/copom-rag-service.qmd
+        text: "Ficha Técnica (CRISP-DM)"
+    right:
+      - icon: github
+        href: https://github.com/vitorwilher/copom-rag-service
+        aria-label: "Repositório no GitHub"
+  page-footer:
+    left: "Vítor Wilher · Análise Macro"
+    right: "Feito com [Quarto](https://quarto.org)"
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-title: "Nesta página"
+    toc-depth: 3
+    code-copy: true
+    code-overflow: wrap
+    highlight-style: github
+    fig-align: center
+    smooth-scroll: true
+    lang: pt-BR
