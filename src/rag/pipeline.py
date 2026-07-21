@@ -15,6 +15,7 @@ que o eval rode em CI/offline sem custo. Toda geração é instrumentada por
 from __future__ import annotations
 
 import os
+import time
 
 from pydantic import BaseModel, Field
 
@@ -43,8 +44,14 @@ class RAGAnswer(BaseModel):
 # TODO: mover o system prompt para arquivo versionado e testá-lo no eval harness.
 SYSTEM_PROMPT = """Você é um assistente especializado em política monetária \
 brasileira. Responda estritamente com base nos trechos fornecidos das atas do \
-Copom e do boletim Focus. Cite as fontes. Se a resposta não estiver no \
-contexto, diga que não há informação suficiente — nunca invente números."""
+Copom e do boletim Focus. Cite a fonte pelo identificador (ex.: ata_279). Se a \
+resposta não estiver no contexto, diga que não há informação suficiente — nunca \
+invente números.
+
+Responda de forma direta e factual. NÃO reproduza citações textuais entre aspas \
+a menos que o trecho apareça literalmente no contexto; se for citar, copie \
+exatamente — nunca parafraseie dentro de aspas nem invente número de parágrafo. \
+Na dúvida, afirme o fato com suas palavras e aponte a fonte, sem aspas."""
 
 
 class RAGPipeline:
@@ -60,6 +67,8 @@ class RAGPipeline:
         retriever: HybridRetriever | None = None,
         model: str = "claude-haiku-4-5",
         max_tokens: int = 1024,
+        max_retries: int = 3,
+        backoff_base: float = 0.5,
     ) -> None:
         """Inicializa o pipeline e indexa o corpus.
 
@@ -67,10 +76,16 @@ class RAGPipeline:
             retriever: retriever híbrido (default: `HybridRetriever()`).
             model: identificador do modelo LLM de geração.
             max_tokens: teto de tokens de saída da geração.
+            max_retries: tentativas extras em falha transitória da API antes de
+                degradar para o modo extrativo (0 desativa o retry).
+            backoff_base: base do backoff exponencial em segundos (espera de
+                `backoff_base * 2**tentativa` entre as tentativas).
         """
         self.retriever = retriever or HybridRetriever()
         self.model = model
         self.max_tokens = max_tokens
+        self._max_retries = max_retries
+        self._backoff_base = backoff_base
         if not getattr(self.retriever, "_indexed", False):
             self.retriever.index(load_corpus())
         self._llm = _make_client()
@@ -112,25 +127,60 @@ class RAGPipeline:
 
         with trace("generate", model=self.model, question=question) as rec:
             if self._llm is None:
+                # Sem chave: modo offline determinístico (não é uma falha).
+                rec.metadata["mode"] = "extractive_no_key"
                 answer = _extractive_answer(question, chunks)
             else:
-                try:
-                    resp = self._llm.messages.create(
-                        model=self.model,
-                        max_tokens=self.max_tokens,
-                        system=SYSTEM_PROMPT,
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    answer = "".join(
-                        b.text for b in resp.content if b.type == "text"
-                    )
-                    rec.input_tokens = resp.usage.input_tokens
-                    rec.output_tokens = resp.usage.output_tokens
-                except Exception:  # noqa: BLE001 — API indisponível → extrativo
-                    # Degrada para resposta extrativa (rede, rate limit, saldo).
-                    answer = _extractive_answer(question, chunks)
+                answer = self._generate(prompt, chunks, rec)
 
         return RAGAnswer(answer=answer, sources=sources, model=self.model)
+
+    def _generate(self, prompt: str, chunks: list[RetrievedChunk], rec) -> str:
+        """Gera a resposta via LLM com retry em falhas transitórias.
+
+        Erros transitórios (rate limit, indisponibilidade, timeout de rede) são
+        reexecutados com backoff exponencial. Só depois de esgotar as tentativas
+        — ou diante de um erro claramente não-transitório — o pipeline degrada
+        para a resposta extrativa. **A degradação é registrada no trace**
+        (`rec.metadata["degraded"]` + motivo): silenciar essa queda mascarava
+        respostas de baixa qualidade como se fossem geração real, contaminando o
+        eval de forma não-determinística.
+
+        Args:
+            prompt: prompt de usuário já montado.
+            chunks: trechos recuperados (para o fallback extrativo).
+            rec: `TraceRecord` do span de geração, anotado com o desfecho.
+
+        Returns:
+            Texto da resposta (do LLM, ou extrativo se tudo falhar).
+        """
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                resp = self._llm.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                rec.input_tokens = resp.usage.input_tokens
+                rec.output_tokens = resp.usage.output_tokens
+                rec.metadata["mode"] = "llm"
+                if attempt:
+                    rec.metadata["retries"] = attempt
+                return "".join(b.text for b in resp.content if b.type == "text")
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < self._max_retries and _is_transient(exc):
+                    time.sleep(self._backoff_base * (2**attempt))
+                    continue
+                break
+
+        # Esgotou as tentativas (ou erro não-transitório): degrada e SINALIZA.
+        rec.metadata["mode"] = "extractive_fallback"
+        rec.metadata["degraded"] = True
+        rec.metadata["degrade_reason"] = type(last_exc).__name__ if last_exc else "unknown"
+        return _extractive_answer("", chunks)
 
 
 def _make_client():
@@ -147,6 +197,31 @@ def _make_client():
         return anthropic.Anthropic()
     except ImportError:
         return None
+
+
+def _is_transient(exc: Exception) -> bool:
+    """Classifica se um erro do SDK justifica retry (transitório) ou não.
+
+    Transitório: rate limit (429), indisponibilidade (5xx), timeout/erro de
+    conexão — condições que tendem a passar numa nova tentativa. Persistente:
+    erro de autenticação, requisição inválida, saldo esgotado — retry só gasta
+    tempo. A checagem é por nome de classe/atributo para não acoplar a versões
+    específicas do SDK anthropic.
+
+    Args:
+        exc: exceção capturada na chamada ao LLM.
+
+    Returns:
+        True se vale a pena reexecutar; False para degradar de imediato.
+    """
+    name = type(exc).__name__
+    if name in {
+        "RateLimitError", "APITimeoutError", "APIConnectionError",
+        "InternalServerError", "APIStatusError", "OverloadedError",
+    }:
+        return True
+    status = getattr(exc, "status_code", None)
+    return status in {429, 500, 502, 503, 504, 529}
 
 
 def _extractive_answer(question: str, chunks: list[RetrievedChunk]) -> str:

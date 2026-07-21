@@ -263,21 +263,49 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+# Sinais para o boost de "chunk de decisão" (ver Reranker.rerank).
+# Uma pergunta sobre a decisão de juros usa estes termos...
+_DECISION_QUERY_TERMS = {
+    "decisão", "decidiu", "elevou", "reduziu", "manteve", "taxa", "selic",
+    "juros", "patamar", "ponto", "pontos", "elevar", "reduzir", "manter",
+}
+# ...e o chunk que a responde carrega o dado explícito da decisão: o patamar
+# numérico da Selic, o cabeçalho oficial da seção "D) Decisão de política
+# monetária", ou o verbo de calibração aplicado à taxa.
+_DECISION_CHUNK_RE = re.compile(
+    r"selic\D{0,15}\d{1,2},\d{2}"      # "Selic para 14,25"
+    r"|\d{1,2},\d{2}\s*%?\s*a\.?\s*a"  # "14,25% a.a."
+    r"|decisão de política monetária"  # cabeçalho oficial da seção D
+    r"|(?:elev|reduz|man)\w+\s+a\s+taxa"  # "reduzir a taxa"
+    r"|\d,\d{2}\s*ponto",              # "1,00 ponto percentual"
+    re.IGNORECASE,
+)
+
+
 class Reranker:
     """Reordena candidatos por relevância fina à pergunta.
 
     Reranking léxico-semântico leve: combina sobreposição de tokens da query
     com o score de recuperação, favorecendo chunks que casam termos raros da
     pergunta. Não exige modelo externo — determinístico e barato.
+
+    **Boost de decisão** (domínio Copom): quando a pergunta é sobre a decisão de
+    juros, chunks que *contêm o dado da decisão* (patamar da Selic, cabeçalho da
+    seção "D) Decisão de política monetária") ganham um bônus. Sem ele, o chunk
+    genérico de "discussão da condução da política monetária" — denso nos termos
+    da pergunta mas sem o número — vencia o parágrafo que traz a decisão de fato.
     """
 
-    def __init__(self, top_n: int = 6) -> None:
+    def __init__(self, top_n: int = 6, decision_boost: float = 0.5) -> None:
         """Inicializa o reranker.
 
         Args:
             top_n: número de chunks a manter após o reranking.
+            decision_boost: bônus aditivo a chunks com o dado da decisão quando
+                a pergunta é sobre decisão de juros (0.0 desativa).
         """
         self.top_n = top_n
+        self.decision_boost = decision_boost
 
     def rerank(self, query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
         """Reordena e corta os candidatos pelos `top_n` mais relevantes.
@@ -293,6 +321,7 @@ class Reranker:
         if not q_tokens:
             return chunks[: self.top_n]
 
+        wants_decision = bool(q_tokens & _DECISION_QUERY_TERMS)
         rescored: list[RetrievedChunk] = []
         for c in chunks:
             # inclui a proveniência para a âncora da ata contar no overlap
@@ -300,6 +329,9 @@ class Reranker:
             overlap = len(q_tokens & c_tokens) / len(q_tokens)
             # combina cobertura de termos da query (peso maior) com o score de fusão
             final = 0.7 * overlap + 0.3 * min(c.score, 1.0)
+            # bônus ao chunk que carrega o dado da decisão pedida
+            if wants_decision and _DECISION_CHUNK_RE.search(c.text):
+                final += self.decision_boost
             rescored.append(RetrievedChunk(c.text, c.source, final, c.metadata))
         rescored.sort(key=lambda c: c.score, reverse=True)
         return rescored[: self.top_n]

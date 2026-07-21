@@ -126,8 +126,32 @@ def evaluate_case(case: EvalCase, pipeline: RAGPipeline, judge: Judge) -> EvalRe
         answer = pipeline.run(case.question)
     except Exception as exc:  # noqa: BLE001 — resiliência do runner por caso
         answer = RAGAnswer(answer=f"[erro na geração: {exc}]", sources=[])
-    verdict = judge.score(case.question, answer.answer, case.expected)
+    # Dá ao juiz os MESMOS trechos que o pipeline recuperou, para que ele
+    # verifique citações contra a fonte real em vez de presumir invenção.
+    context = _retrieved_context(pipeline, case.question)
+    verdict = judge.score(case.question, answer.answer, case.expected, context)
     return EvalResult(case=case, answer=answer, verdict=verdict)
+
+
+def _retrieved_context(pipeline: RAGPipeline, question: str) -> str:
+    """Recupera os trechos das atas para a pergunta, como contexto do juiz.
+
+    Reexecuta o retrieval (barato; o índice já está em memória) e formata os
+    chunks com seus marcadores de fonte. Falha de forma silenciosa retornando
+    string vazia — sem contexto, o juiz apenas volta ao comportamento antigo.
+
+    Args:
+        pipeline: pipeline cujo retriever indexado será consultado.
+        question: pergunta do caso.
+
+    Returns:
+        Bloco de contexto formatado, ou "" se o retrieval falhar.
+    """
+    try:
+        chunks = pipeline.retriever.retrieve(question)
+    except Exception:  # noqa: BLE001 — sem contexto, juiz degrada ao modo antigo
+        return ""
+    return "\n\n".join(f"[{c.source}] {c.text}" for c in chunks)
 
 
 def aggregate(results: list[EvalResult]) -> dict:

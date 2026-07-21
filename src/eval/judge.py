@@ -33,7 +33,15 @@ JUDGE_SYSTEM_PROMPT = """Você é um avaliador rigoroso de respostas sobre \
 política monetária brasileira. Compare a RESPOSTA GERADA com a RESPOSTA \
 ESPERADA para a PERGUNTA. Atribua um score de 0.0 (totalmente incorreta ou \
 alucinada) a 1.0 (correta, completa e sem invenções). Penalize fortemente \
-números incorretos. Retorne o score e uma justificativa curta e objetiva."""
+números incorretos.
+
+Quando houver uma seção CONTEXTO (os trechos das atas efetivamente recuperados), \
+use-a como a fonte da verdade: só marque `hallucination` para uma afirmação que \
+**contradiga** o contexto ou não possa ser sustentada por ele. NÃO trate como \
+invenção um detalhe correto e sustentado pelo contexto — número de parágrafo, \
+citação textual da ata, ou informação adicional presente nos trechos — mesmo que \
+a RESPOSTA ESPERADA não o mencione: o gabarito é um resumo, não um teto de \
+detalhe. Retorne o score e uma justificativa curta e objetiva."""
 
 
 class JudgeVerdict(BaseModel):
@@ -77,25 +85,34 @@ class Judge:
         self.samples = max(1, samples)
         self._llm = _make_client()
 
-    def build_prompt(self, question: str, answer: str, expected: str) -> str:
+    def build_prompt(
+        self, question: str, answer: str, expected: str, context: str = ""
+    ) -> str:
         """Monta o prompt de avaliação para o juiz.
 
         Args:
             question: pergunta do golden set.
             answer: resposta gerada pelo pipeline.
             expected: resposta esperada (gabarito).
+            context: trechos das atas recuperados (fonte da verdade para o juiz
+                distinguir detalhe correto de invenção). Vazio = juiz avalia só
+                contra o gabarito (comportamento antigo).
 
         Returns:
             Prompt de usuário para o LLM juiz.
         """
+        bloco_ctx = f"CONTEXTO (trechos recuperados das atas):\n{context}\n\n" if context else ""
         return (
             f"PERGUNTA:\n{question}\n\n"
             f"RESPOSTA ESPERADA:\n{expected}\n\n"
+            f"{bloco_ctx}"
             f"RESPOSTA GERADA:\n{answer}\n\n"
             "Avalie a RESPOSTA GERADA."
         )
 
-    def score(self, question: str, answer: str, expected: str) -> JudgeVerdict:
+    def score(
+        self, question: str, answer: str, expected: str, context: str = ""
+    ) -> JudgeVerdict:
         """Avalia uma resposta e retorna o veredito estruturado agregado.
 
         Amostra o juiz `self.samples` vezes e agrega (self-consistency):
@@ -106,6 +123,10 @@ class Judge:
             question: pergunta do golden set.
             answer: resposta gerada pelo pipeline.
             expected: resposta esperada (gabarito).
+            context: trechos das atas recuperados. Quando fornecido, o juiz
+                verifica citações contra a fonte real em vez de presumir invenção
+                — evita punir uma resposta correta por ser mais detalhada que o
+                gabarito (era a causa da oscilação de q01).
 
         Returns:
             `JudgeVerdict` agregado (score, justificativa, flag de alucinação).
@@ -113,7 +134,7 @@ class Judge:
         if self._llm is None:
             return _heuristic_verdict(answer, expected)
 
-        prompt = self.build_prompt(question, answer, expected)
+        prompt = self.build_prompt(question, answer, expected, context)
         verdicts = [self._score_once(prompt, question) for _ in range(self.samples)]
         return _aggregate_verdicts(verdicts)
 
