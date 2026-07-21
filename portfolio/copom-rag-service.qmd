@@ -35,6 +35,14 @@ resposta **cita as fontes** usadas. Em um domínio onde um número errado (Selic
 meta de inflação, projeção) é uma falha grave, auditabilidade e ausência de
 alucinação são requisitos, não enfeites.
 
+O contexto de uso imaginado é o de um **departamento de pesquisa macroeconômica
+de banco**: o objetivo é **comprimir o tempo entre a fonte primária (a ata que
+acabou de sair) e uma leitura defensável e rastreável** que a **mesa de operação**
+possa usar para posicionar em juros. Não se trata de "prever a Selic" — a
+convicção direcional continua sendo do economista —, mas de dar ao *research* e à
+mesa um copiloto de leitura testado e auditável. A seção de
+[Motivação](#motivação) detalha os públicos-alvo e a tese de negócio.
+
 O diferencial do projeto, contudo, **não é o RAG em si** — é a **engenharia de
 qualidade ao redor dele**:
 
@@ -58,18 +66,59 @@ o *gate* que transforma "parece bom" em "passou ou falhou".
 
 ## Motivação
 
-Sistemas de RAG são fáceis de montar e difíceis de manter honestos. Uma troca de
-modelo, um ajuste de *prompt*, uma mudança no *chunking* ou no *reranker* podem
-melhorar três respostas e piorar outras dez — sem que ninguém perceba até um
-usuário reclamar. No domínio de **comunicação de banco central**, o custo de uma
-resposta errada é alto: números de política monetária são citados, comparados e
-usados para tomar decisões.
+### O problema de negócio: da fonte primária à leitura defensável
 
-O projeto responde a três perguntas práticas de engenharia de LLM:
+Imagine este projeto dentro do **departamento de pesquisa macroeconômica de um
+grande banco brasileiro** — um Itaú, Bradesco, Santander, Banco do Brasil ou
+Nubank. Um time de macro produz, essencialmente, três coisas: **cenário** (para
+onde vão Selic, câmbio, inflação e atividade), **calls** (recomendações táticas
+para as mesas) e **atendimento** a clientes internos e externos. O gargalo
+crônico não é *ter* a opinião — é a **velocidade e a rastreabilidade** entre "o
+Banco Central falou" e "a mesa agiu com base numa leitura defensável".
+
+O cliente interno mais crítico é a **mesa de operação** (juros / *rates*). Assim
+que uma ata do Copom sai, ela precisa responder, em minutos, três perguntas cujo
+resultado move preço:
+
+1. **O que mudou** no comunicado/ata em relação ao anterior — *forward guidance*,
+   balanço de riscos, assimetria do cenário;
+2. **Isso confirma ou contradiz o que o mercado já espera** — o *gap* entre a
+   comunicação do Copom e a mediana do **Focus** é, literalmente, fonte de alfa
+   para uma posição em DI/pré;
+3. **Qual a base textual** dessa leitura — para tomar risco, a mesa precisa poder
+   clicar na frase da ata que sustenta a interpretação.
+
+Este serviço **não substitui** o economista sênior que forma o cenário; a
+convicção direcional (o *call* de "corta 50 vs. 25") continua sendo humana. O que
+ele faz é **industrializar a camada de leitura de fontes primárias** (atas +
+Focus) que hoje é feita no braço, sob pressão de tempo, e cujo raciocínio
+raramente fica documentado. É um **copiloto de leitura**, não o piloto do
+cenário — e a diferença para um *chatbot* genérico é que aqui as fontes são o
+Copom e o Focus, **versionados**, e a resposta é **auditável e testada**.
+
+### Por que o eval harness é o que dá "licença de operar" num banco
+
+Numa instituição regulada, uma ferramenta que gera leitura de política monetária
+para embasar posição de risco tem um problema óbvio: **e se ela alucinar?** Um
+economista que inventa uma frase que o Copom não disse — e a mesa monta centenas
+de milhões em DI em cima disso — é um **incidente**. O *golden set* + LLM-as-judge
++ gate de CI que **reprova se a qualidade regride** é a resposta institucional
+para "como você garante que essa coisa não me faz tomar decisão sobre fato
+inventado?". Neste projeto, a engenharia de avaliação não é só boa prática de
+*software*: é **governança de modelo e gestão de risco disfarçadas de código** —
+a diferença entre um brinquedo e algo que passa no **comitê de modelos**.
+
+### As perguntas de engenharia por trás disso
+
+Tecnicamente, sistemas de RAG são fáceis de montar e difíceis de manter honestos.
+Uma troca de modelo, um ajuste de *prompt*, uma mudança no *chunking* ou no
+*reranker* podem melhorar três respostas e piorar outras dez — sem que ninguém
+perceba até um usuário reclamar. O projeto responde, então, a três perguntas
+práticas de engenharia de LLM que espelham as três dores de negócio acima:
 
 1. **Como impedir regressão de qualidade** em um serviço de RAG a cada mudança?
-2. **Quanto custa, quão rápido e quantos *tokens* consome** cada resposta em
-   produção?
+2. **Quanto custa, quão rápido e quantos *tokens* consome** cada resposta —
+   métrica de produto num *research* que vive de orçamento e de SLA?
 3. **Como garantir auditabilidade** — que cada resposta seja rastreável às atas
    ou ao Focus que a fundamentam?
 
@@ -131,10 +180,18 @@ flowchart LR
 Servir um assistente de RAG sobre política monetária é, antes de tudo, um
 problema de **confiabilidade**. A comunicação do Copom concentra, em escolhas
 sutis de linguagem e em números precisos, informação relevante sobre a direção
-da Selic. Um serviço que responda a perguntas sobre esse material precisa ser
-**fundamentado** (cada resposta apoiada em trechos reais), **auditável** (fontes
-citadas) e **estável** (qualidade que não regride a cada mudança de *prompt*,
-modelo ou *retriever*).
+da Selic — e política monetária no Brasil é, cada vez mais, um exercício de
+**interpretar comunicação** (o Copom fala para ancorar expectativas). Uma
+ferramenta que leia essa comunicação de forma sistemática, testada e citável é
+exatamente o tipo de **vantagem marginal** que um *research* de banco persegue.
+
+Do ponto de vista da **mesa de operação**, o problema é de **tempo e de defesa
+da tese**: a leitura da ata precisa sair em minutos, tornar explícito o *gap*
+entre o Copom e o Focus, e vir com a **frase-fonte** que a sustenta — porque é
+com base nela que a mesa monta a posição. Um serviço que responda a esse material
+precisa, então, ser **fundamentado** (cada resposta apoiada em trechos reais),
+**auditável** (fontes citadas) e **estável** (qualidade que não regride a cada
+mudança de *prompt*, modelo ou *retriever*).
 
 ### 1.2 Objetivos
 
@@ -145,7 +202,24 @@ modelo ou *retriever*).
 3. Instrumentar **custo, latência e tokens** por *request*;
 4. Empacotar tudo como **API + Docker** reprodutível.
 
-### 1.3 Critérios de sucesso
+### 1.3 Públicos-alvo (clientes internos)
+
+O serviço é desenhado como **produto de dados para clientes internos** do banco.
+Cada público extrai um valor distinto do mesmo endpoint:
+
+| Público-alvo | O que ganha |
+|---|---|
+| **Mesa de *rates* / juros** | Leitura da ata em minutos, com o *gap* Copom × Focus explícito e fonte clicável para tomar risco |
+| **Economista-chefe / cenário** | Livra o time do garimpo braçal de fontes e o libera para o que é insubstituível — formar a convicção |
+| ***Sales* / clientes externos** | Munição para o *flash* pós-Copom que sai antes do concorrente, com consistência de narrativa |
+| **Risco / *compliance* / comitê de modelos** | Uma IA que **não é aprovada sem passar num gate de qualidade** — governança embutida, não *post facto* |
+| **Tesouraria / ALM** | Sinal antecipado de trajetória de Selic para decisões de *funding* e *hedge* |
+
+O denominador comum: uma **única fonte de verdade, testada e rastreável**, sobre
+o que o Banco Central efetivamente disse — em vez de N leituras informais e não
+documentadas espalhadas pelo *chat* do time.
+
+### 1.4 Critérios de sucesso
 
 | Critério | Meta |
 |---|---|
