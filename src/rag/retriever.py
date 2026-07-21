@@ -269,6 +269,13 @@ _DECISION_QUERY_TERMS = {
     "decisão", "decidiu", "elevou", "reduziu", "manteve", "taxa", "selic",
     "juros", "patamar", "ponto", "pontos", "elevar", "reduzir", "manter",
 }
+# ...mas se a pergunta é sobre EXPECTATIVAS DE MERCADO (boletim Focus), não é
+# sobre a decisão do Copom — o boost de decisão sequestraria o chunk do Focus
+# (que projeta "Selic: 14,0 ao fim de 2026", sem casar o padrão de decisão).
+# Estes termos DESLIGAM o boost, deixando o chunk `focus_*` competir em pé de
+# igualdade.
+_MARKET_QUERY_TERMS = {"focus", "mercado", "expectativa", "expectativas",
+                       "projeção", "projeções", "projetava", "esperava"}
 # ...e o chunk que a responde carrega o dado explícito da decisão: o patamar
 # numérico da Selic, o cabeçalho oficial da seção "D) Decisão de política
 # monetária", ou o verbo de calibração aplicado à taxa.
@@ -321,7 +328,11 @@ class Reranker:
         if not q_tokens:
             return chunks[: self.top_n]
 
-        wants_decision = bool(q_tokens & _DECISION_QUERY_TERMS)
+        # Boost de decisão só quando a pergunta é sobre a decisão do Copom — não
+        # quando é sobre as expectativas de mercado (Focus), que têm chunk próprio.
+        wants_decision = bool(q_tokens & _DECISION_QUERY_TERMS) and not (
+            q_tokens & _MARKET_QUERY_TERMS
+        )
         rescored: list[RetrievedChunk] = []
         for c in chunks:
             # inclui a proveniência para a âncora da ata contar no overlap

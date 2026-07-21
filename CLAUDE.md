@@ -28,11 +28,12 @@ src/
 ├── eval/golden_set.jsonl  # 8 perguntas reais sobre o Copom + gabarito
 ├── eval/judge.py       # LLM-as-judge (messages.parse) + fallback heurístico
 ├── eval/run_eval.py    # CORAÇÃO: roda golden set, agrega, gate exit 1
-└── obs/tracing.py      # context manager de custo/latência/tokens
+└── obs/tracing.py      # trace() + sink JSONL (COPOM_TRACE_FILE) + summarize_traces
 scripts/download_atas.py # API do BCB → data/atas_full_cache.json (atas completas)
-scripts/ingest.py       # atas_full_cache.json → data/corpus.jsonl
-data/corpus.jsonl       # 814 chunks de 48 atas completas (232–279), versionado
-tests/                  # pytest: retriever, pipeline, judge, gate (15 testes)
+scripts/download_focus.py # API Expectativas do BCB → data/focus_cache.json (ancorado às reuniões)
+scripts/ingest.py       # atas_full_cache.json (+ focus_cache.json) → data/corpus.jsonl
+data/corpus.jsonl       # 862 chunks: 814 de 48 atas (232–279) + 48 do Focus, versionado
+tests/                  # pytest: retriever, pipeline, judge, gate, tracing, focus (29 testes)
 portfolio/
 └── copom-rag-service.qmd   # ficha CRISP-DM (padrão-ouro do portfólio)
 ```
@@ -45,7 +46,9 @@ portfolio/
   `ANTHROPIC_API_KEY` (no `.env` local, git-ignorado); sem chave, degradam para
   modos determinísticos (extrativo / heurístico) — eval roda offline sem custo.
 - Ingestão: `python scripts/download_atas.py` (API do BCB → atas completas) →
-  `python scripts/ingest.py` (→ corpus.jsonl). Baixa desde a reunião 232.
+  opcional `python scripts/download_focus.py` (API Expectativas do BCB → Focus
+  ancorado às datas das reuniões) → `python scripts/ingest.py` (→ corpus.jsonl,
+  atas + Focus). Baixa desde a reunião 232.
 - **Propósito do eval = fidelidade às atas** (não é quiz conceitual). O usuário
   já domina os conceitos; quer saber o que a ata *específica* disse. O golden set
   tem 5 fatos ancorados em atas nomeadas (decisões de juros, balanço de riscos,
@@ -56,9 +59,17 @@ portfolio/
 - **Juiz estabilizado por self-consistency**: `Judge(samples=N)` amostra o juiz
   N vezes por caso (default 3) e agrega por **mediana** da nota + voto de maioria
   na alucinação — reduz a variância que fazia o gate oscilar. Flag `--samples`.
-- `python -m eval.run_eval` roda o gate; `pytest` roda 22 testes (todos passam).
-- **Ainda TODO**: Focus não ingerido; atas < reunião 232 (API lista desde a 21);
-  exportador real de métricas do tracing (OTel/Prometheus); embeddings via
+- **Focus ingerido** (48 reuniões): `download_focus.py` puxa da API Expectativas
+  do BCB a mediana de Selic/IPCA/PIB/Câmbio vigente na véspera de cada reunião;
+  `ingest.py` vira 1 chunk `focus_AAAA-MM-DD` por reunião. Corpus = **862 chunks**
+  (814 atas + 48 Focus). O reranker desliga o boost de decisão em perguntas de
+  mercado (`_MARKET_QUERY_TERMS`) para o chunk Focus não perder para as atas.
+- **Tracing com sink real**: `COPOM_TRACE_FILE=path python -m eval.run_eval` grava
+  cada span em JSONL (inclui `degraded`); `python -m obs.tracing <path>` agrega
+  custo/latência/tokens por modelo e por span (`summarize_traces`).
+- `python -m eval.run_eval` roda o gate; `pytest` roda **29 testes** (todos passam).
+- **Ainda TODO**: atas < reunião 232 (API lista desde a 21); exportador OTel/
+  Prometheus de fato (hoje JSONL, o formato que eles consumiriam); embeddings via
   provider (hoje fallback local — descomente openai/google em requirements).
 
 ## Convenções (herdadas do portfólio do Vitor)

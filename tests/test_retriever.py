@@ -100,3 +100,35 @@ def test_retrieval_ancorado_por_ata_prioriza_a_ata_certa():
     r.index(chunks)
     hits = r.retrieve("Qual a decisão na reunião de janeiro de 2025 (ata 268)?")
     assert hits[0].source == "ata_268"  # âncora da ata/data desempata
+
+
+# --- Boost de decisão (Reranker) e sua interação com o Focus ---
+
+_ATA_DECISAO = RetrievedChunk(
+    "D) Decisão de política monetária. O Copom decidiu reduzir a Selic para 14,25% a.a.",
+    "ata_279", metadata={"meeting": "279", "data": "2026-06-17"})
+_ATA_DISCUSSAO = RetrievedChunk(
+    "O Comitê discutiu a condução da política monetária e o balanço de riscos.",
+    "ata_279", metadata={"meeting": "279", "data": "2026-06-17", "chunk": 1})
+_FOCUS = RetrievedChunk(
+    "Expectativas do mercado (Focus) na véspera da reunião 279: a taxa Selic 14,0 ao fim de 2026.",
+    "focus_2026-06-17", metadata={"meeting": "279", "data": "2026-06-17", "kind": "focus"})
+
+
+def test_boost_decisao_prioriza_chunk_com_o_numero():
+    # Pergunta sobre a DECISÃO: o chunk com o número deve vencer o de discussão.
+    r = Reranker(top_n=2)
+    out = r.rerank("Qual a decisão de juros da ata 279?", [_ATA_DISCUSSAO, _ATA_DECISAO])
+    assert out[0].source == "ata_279"
+    assert "14,25" in out[0].text  # o chunk da decisão, não o da discussão
+
+
+def test_pergunta_de_mercado_nao_e_sequestrada_pelo_boost():
+    # Pergunta sobre FOCUS/mercado: o boost de decisão fica desligado, então o
+    # chunk focus_* compete em pé de igualdade e não perde para a ata de decisão.
+    r = Reranker(top_n=1)
+    out = r.rerank(
+        "O que o mercado (Focus) esperava para a Selic na reunião 279?",
+        [_ATA_DECISAO, _FOCUS],
+    )
+    assert out[0].source.startswith("focus_")
