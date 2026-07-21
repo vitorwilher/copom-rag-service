@@ -11,10 +11,10 @@ Uso::
     python -m eval.run_eval --threshold 0.75      # gate customizado
     python -m eval.run_eval --golden custom.jsonl # outro golden set
 
-O fluxo está completamente esqueletado: leitura do golden set, laço de execução
-pergunta a pergunta (pipeline → judge), agregação, relatório e o gate de saída.
-Os únicos pontos ainda inertes são `RAGPipeline.run` e `Judge.score`, que são
-TODOs marcados nos respectivos módulos.
+O fluxo roda de ponta a ponta: leitura do golden set, laço de execução pergunta
+a pergunta (pipeline → judge), agregação, relatório e o gate de saída. Pipeline
+e juiz chamam Claude quando há `ANTHROPIC_API_KEY`; sem chave, ambos degradam
+para modos determinísticos (extrativo / heurístico) e o eval ainda mede.
 """
 
 from __future__ import annotations
@@ -65,6 +65,20 @@ class EvalResult:
     verdict: JudgeVerdict
 
 
+def _load_env() -> None:
+    """Carrega variáveis de `.env` (ANTHROPIC_API_KEY etc.), se disponível.
+
+    Silencioso quando `python-dotenv` não está instalado ou não há `.env` — o
+    pipeline/juiz então operam em modo fallback determinístico.
+    """
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+
+
 def load_golden_set(path: Path) -> list[EvalCase]:
     """Lê o golden set em JSONL e o converte em `EvalCase`s.
 
@@ -104,15 +118,14 @@ def evaluate_case(case: EvalCase, pipeline: RAGPipeline, judge: Judge) -> EvalRe
         `EvalResult` com resposta e veredito.
 
     Nota:
-        Captura `NotImplementedError` do pipeline (enquanto retrieval + LLM são
-        stubs) e o degrada para um `RAGAnswer` vazio, de modo que o runner rode
-        de ponta a ponta e o gate reprove — em vez de estourar. Ao conectar o
-        pipeline real, respostas de verdade fluem sem alteração neste código.
+        Captura falhas de runtime do pipeline (rede, provedor) e as degrada para
+        um `RAGAnswer` vazio, de modo que uma pergunta problemática não derrube o
+        run inteiro — o caso simplesmente recebe score baixo do juiz.
     """
     try:
         answer = pipeline.run(case.question)
-    except NotImplementedError as exc:
-        answer = RAGAnswer(answer=f"[não implementado: {exc}]", sources=[])
+    except Exception as exc:  # noqa: BLE001 — resiliência do runner por caso
+        answer = RAGAnswer(answer=f"[erro na geração: {exc}]", sources=[])
     verdict = judge.score(case.question, answer.answer, case.expected)
     return EvalResult(case=case, answer=answer, verdict=verdict)
 
@@ -159,19 +172,22 @@ def print_report(results: list[EvalResult], summary: dict, threshold: float) -> 
     )
 
 
-def run(golden_path: Path, threshold: float) -> int:
+def run(golden_path: Path, threshold: float, samples: int = 3) -> int:
     """Roda o eval completo e retorna o exit code.
 
     Args:
         golden_path: caminho do golden set.
         threshold: média mínima para aprovar.
+        samples: nº de avaliações do juiz por caso (self-consistency; estabiliza
+            o gate perto do threshold).
 
     Returns:
         0 se a média >= threshold, 1 caso contrário (gate do CI).
     """
+    _load_env()
     cases = load_golden_set(golden_path)
     pipeline = RAGPipeline()
-    judge = Judge()
+    judge = Judge(samples=samples)
 
     results = [evaluate_case(c, pipeline, judge) for c in cases]
     summary = aggregate(results)
@@ -190,8 +206,10 @@ def main() -> None:
                         help=f"Média mínima para aprovar (default {DEFAULT_THRESHOLD}).")
     parser.add_argument("--golden", type=Path, default=DEFAULT_GOLDEN,
                         help="Caminho do golden set JSONL.")
+    parser.add_argument("--samples", type=int, default=3,
+                        help="Avaliações do juiz por caso (default 3; estabiliza o gate).")
     args = parser.parse_args()
-    sys.exit(run(args.golden, args.threshold))
+    sys.exit(run(args.golden, args.threshold, args.samples))
 
 
 if __name__ == "__main__":

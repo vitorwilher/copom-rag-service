@@ -4,12 +4,22 @@ Este é o núcleo de geração servido pela API e exercitado pelo eval harness.
 O contrato é estável: `RAGPipeline.run(pergunta)` retorna um `RAGAnswer` com a
 resposta em linguagem natural e a lista de fontes citadas (para auditabilidade —
 requisito inegociável quando o domínio é comunicação de banco central).
+
+Design de robustez: a chamada ao LLM é real (Claude via SDK Anthropic) quando
+`ANTHROPIC_API_KEY` está no ambiente; sem chave, o pipeline degrada para uma
+resposta extrativa determinística (concatena os trechos mais relevantes) para
+que o eval rode em CI/offline sem custo. Toda geração é instrumentada por
+`obs.tracing.trace` (custo/latência/tokens).
 """
 
 from __future__ import annotations
 
+import os
+
 from pydantic import BaseModel, Field
 
+from obs.tracing import trace
+from rag.corpus import load_corpus
 from rag.retriever import HybridRetriever, RetrievedChunk
 
 
@@ -41,26 +51,35 @@ class RAGPipeline:
     """Orquestra a passagem completa recuperação → prompt → geração.
 
     Componível: recebe um `HybridRetriever` e um cliente LLM (injetados para
-    facilitar teste e troca de provedor).
+    facilitar teste e troca de provedor). O corpus é carregado e indexado uma
+    vez na construção.
     """
 
     def __init__(
         self,
         retriever: HybridRetriever | None = None,
         model: str = "claude-haiku-4-5",
+        max_tokens: int = 1024,
     ) -> None:
-        """Inicializa o pipeline.
+        """Inicializa o pipeline e indexa o corpus.
 
         Args:
             retriever: retriever híbrido (default: `HybridRetriever()`).
             model: identificador do modelo LLM de geração.
+            max_tokens: teto de tokens de saída da geração.
         """
         self.retriever = retriever or HybridRetriever()
         self.model = model
-        self._llm = None  # TODO: anthropic.Anthropic(...) client
+        self.max_tokens = max_tokens
+        if not getattr(self.retriever, "_indexed", False):
+            self.retriever.index(load_corpus())
+        self._llm = _make_client()
 
     def build_prompt(self, question: str, chunks: list[RetrievedChunk]) -> str:
         """Monta o prompt de usuário concatenando contexto e pergunta.
+
+        Cada chunk é prefixado com seu marcador de fonte `[ata_NNN]` para
+        permitir citação rastreável na resposta.
 
         Args:
             question: pergunta do usuário.
@@ -68,9 +87,6 @@ class RAGPipeline:
 
         Returns:
             String do prompt de usuário pronta para envio ao LLM.
-
-        TODO: formatar cada chunk com marcador de fonte para permitir citação
-              rastreável na resposta.
         """
         contexto = "\n\n".join(f"[{c.source}] {c.text}" for c in chunks)
         return f"Contexto:\n{contexto}\n\nPergunta: {question}"
@@ -89,17 +105,79 @@ class RAGPipeline:
 
         Returns:
             `RAGAnswer` com resposta e fontes.
-
-        TODO: conectar retrieval real e chamada ao LLM. Envolver a chamada em
-              `obs.tracing.trace(...)` para registrar custo/latência/tokens.
         """
-        # chunks = self.retriever.retrieve(question)
-        # prompt = self.build_prompt(question, chunks)
-        # with trace("generate", model=self.model) as rec:
-        #     resp = self._llm.messages.create(...)
-        #     rec.input_tokens = resp.usage.input_tokens
-        #     rec.output_tokens = resp.usage.output_tokens
-        # return RAGAnswer(answer=resp..., sources=[c.source for c in chunks])
-        raise NotImplementedError(
-            "RAGPipeline.run ainda não implementado — retrieval + LLM são TODO"
-        )
+        chunks = self.retriever.retrieve(question)
+        prompt = self.build_prompt(question, chunks)
+        sources = _dedupe([c.source for c in chunks])
+
+        with trace("generate", model=self.model, question=question) as rec:
+            if self._llm is None:
+                answer = _extractive_answer(question, chunks)
+            else:
+                try:
+                    resp = self._llm.messages.create(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        system=SYSTEM_PROMPT,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    answer = "".join(
+                        b.text for b in resp.content if b.type == "text"
+                    )
+                    rec.input_tokens = resp.usage.input_tokens
+                    rec.output_tokens = resp.usage.output_tokens
+                except Exception:  # noqa: BLE001 — API indisponível → extrativo
+                    # Degrada para resposta extrativa (rede, rate limit, saldo).
+                    answer = _extractive_answer(question, chunks)
+
+        return RAGAnswer(answer=answer, sources=sources, model=self.model)
+
+
+def _make_client():
+    """Instancia o cliente Anthropic se houver chave; senão retorna None.
+
+    Returns:
+        Cliente `anthropic.Anthropic` ou `None` (modo fallback offline).
+    """
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return None
+    try:
+        import anthropic
+
+        return anthropic.Anthropic()
+    except ImportError:
+        return None
+
+
+def _extractive_answer(question: str, chunks: list[RetrievedChunk]) -> str:
+    """Resposta extrativa determinística — fallback sem LLM.
+
+    Não gera linguagem natural nova: devolve os trechos mais relevantes com suas
+    fontes, o suficiente para o eval exercitar o retrieval de ponta a ponta sem
+    depender de uma chave de API. Se nada for recuperado, abstém-se.
+
+    Args:
+        question: pergunta do usuário (não usada; assinatura simétrica ao LLM).
+        chunks: trechos recuperados.
+
+    Returns:
+        Texto extrativo com marcadores de fonte, ou abstenção explícita.
+    """
+    if not chunks:
+        return "Não há informação suficiente no contexto recuperado."
+    trechos = [f"[{c.source}] {c.text}" for c in chunks[:3]]
+    return (
+        "Com base nos trechos recuperados das atas do Copom:\n\n"
+        + "\n\n".join(trechos)
+    )
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    """Remove duplicatas preservando a ordem de primeira ocorrência."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for it in items:
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out

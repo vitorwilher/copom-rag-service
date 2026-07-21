@@ -6,11 +6,20 @@ pydantic>=2.7
 # --- Retrieval ---
 chromadb>=0.5          # vector store denso (alternativa: pgvector via psycopg)
 rank-bm25>=0.2.2       # retrieval esparso (BM25)
+
+# --- Ingestão das atas (scripts/download_atas.py) ---
+requests>=2.31         # cliente HTTP da API do BCB
+beautifulsoup4>=4.12   # limpeza do HTML das atas
 # pgvector>=0.3        # descomente se optar por Postgres + pgvector
 # psycopg[binary]>=3.2
 
 # --- LLM ---
 anthropic>=0.40        # geração + LLM-as-judge (Claude)
+
+# --- Embeddings do retrieval denso (opcional) ---
+# Sem estes, o denso usa fallback local (hashing/TF) — ver src/rag/embeddings.py.
+# openai>=1.40                 # text-embedding-3-small
+# google-generativeai>=0.8     # text-embedding-004
 
 # --- Observability / utilidades ---
 python-dotenv>=1.0

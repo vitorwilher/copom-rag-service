@@ -29,6 +29,10 @@ chroma_db/
 *.sqlite3
 data/index/
 
+# Cache bruto das atas (intermediário, regenerável via scripts/download_atas.py).
+# O corpus.jsonl derivado É versionado (fonte da verdade em runtime, leve).
+data/atas_full_cache.json
+
 # Snapshots ad-hoc de sessão (releases formais ficam em versions/)
 _rollback/
 

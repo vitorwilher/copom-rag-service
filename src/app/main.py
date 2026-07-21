@@ -15,6 +15,13 @@ from __future__ import annotations
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()  # carrega ANTHROPIC_API_KEY etc.; sem .env, pipeline usa fallback
+except ImportError:
+    pass
+
 from obs.tracing import trace
 from rag.pipeline import RAGPipeline
 
@@ -76,20 +83,7 @@ def ask(req: AskRequest) -> AskResponse:
 
     Returns:
         `AskResponse` com resposta, fontes e modelo.
-
-    TODO: substituir a resposta-stub pela chamada real a `pipeline.run`.
-          Enquanto `RAGPipeline.run` levanta `NotImplementedError`, este
-          endpoint devolve um placeholder explícito para que a API suba e o
-          contrato HTTP seja testável de ponta a ponta.
     """
     with trace("ask", model=pipeline.model, question=req.question):
-        # answer = pipeline.run(req.question)          # TODO: ativar
-        # return AskResponse(**answer.model_dump())
-        return AskResponse(
-            answer=(
-                "STUB: pipeline de retrieval + LLM ainda não conectado. "
-                "Veja RAGPipeline.run em src/rag/pipeline.py."
-            ),
-            sources=[],
-            model=pipeline.model,
-        )
+        answer = pipeline.run(req.question)
+        return AskResponse(**answer.model_dump())

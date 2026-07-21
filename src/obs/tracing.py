@@ -25,7 +25,8 @@ from typing import Iterator
 # TODO: mover para configuração / carregar do provedor via `claude-api` reference.
 PRICE_TABLE: dict[str, dict[str, float]] = {
     "claude-haiku-4-5": {"input": 1.00, "output": 5.00},
-    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
+    "claude-sonnet-5": {"input": 3.00, "output": 15.00},
+    "claude-opus-4-8": {"input": 5.00, "output": 25.00},
 }
 
 
