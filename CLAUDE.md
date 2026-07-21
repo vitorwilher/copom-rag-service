@@ -40,9 +40,16 @@ portfolio/
 
 ## Estado atual (2026-07-21)
 
+> **TL;DR:** motor no melhor ponto. **Gate = média 1,000, 0 alucinações**
+> (`PYTHONPATH=src python -m eval.run_eval --samples 3`). **31 testes passam.**
+> Focus ingerido (corpus 862 chunks). Tracing com sink JSONL. Tudo commitado na
+> branch `feat/motor-rag-eval` (`7c4977c`, `6a95b2f`); **sem push/PR** (não pedido).
+> Próximo: PR p/ main, ou atas <232, ou exportador OTel/Prometheus, ou embeddings
+> via provider.
+
 - **Motor implementado e rodável de ponta a ponta.** Retrieval híbrido real
-  (BM25 + denso + RRF + rerank) sobre 814 chunks de 48 atas **completas** (A+B+C)
-  baixadas do BCB. Pipeline e juiz chamam Claude via SDK quando há
+  (BM25 + denso + RRF + rerank) sobre 862 chunks (48 atas **completas** A+B+C +
+  48 do Focus) baixados do BCB. Pipeline e juiz chamam Claude via SDK quando há
   `ANTHROPIC_API_KEY` (no `.env` local, git-ignorado); sem chave, degradam para
   modos determinísticos (extrativo / heurístico) — eval roda offline sem custo.
 - Ingestão: `python scripts/download_atas.py` (API do BCB → atas completas) →
