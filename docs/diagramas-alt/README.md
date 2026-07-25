@@ -12,3 +12,20 @@ para o público AI/LLM Engineer.
 
 Preservados porque servem a públicos diferentes; recuperáveis se a ficha ganhar
 uma seção de contexto de negócio.
+
+## Atenção ao editar o card-full
+
+Em **2026-07-25** o card-full foi corrigido para bater com o código implementado
+— o desenho original descrevia o projeto *planejado*, não o construído:
+
+| Dizia | É |
+|---|---|
+| `vector store · chromadb/pgvector` | índice denso **em memória** |
+| `reranker · cross-encoder` | reranker **léxico-semântico**, sem modelo externo |
+| `chunking 512 tok · overlap 64` | **1200 caracteres**, overlap 200 |
+| saída `{answer, sources[], abstained}` | `{answer, sources[]}` — não há `abstained` |
+
+A **capa da ficha do portfólio é gerada a partir deste arquivo**
+(`portfolio/copom-rag-service-capa.png`), então qualquer divergência nova acaba
+publicada. A versão simples anterior está preservada em
+`portfolio/copom-rag-service-capa-simples.png`.

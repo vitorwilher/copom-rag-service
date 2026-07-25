@@ -1,24 +1,39 @@
 ---
 title: "COPOM RAG Service — RAG sobre Atas do Copom + Focus, Servido como API com Eval Harness e Observability"
-date: "2026-07-14"
-categories: [Python, FastAPI, Docker, RAG, LLM, Anthropic Claude, BM25, ChromaDB, pgvector, LLM-as-judge, CI, Observability, Política Monetária, Banco Central, Macroeconomia]
-description: "Serviço de RAG sobre as atas do Copom e o boletim Focus, exposto como API (FastAPI + Docker), com eval harness (golden set + LLM-as-judge + gate de CI que falha se a qualidade regride) e observability de custo, latência e tokens por request."
+date: "2026-07-22"
+categories: [Python, FastAPI, Docker, RAG, LLM, Anthropic Claude, BM25, RRF, Reranking, LLM-as-judge, Self-consistency, CI, Observability, Política Monetária, Banco Central, Macroeconomia]
+description: "Serviço de RAG sobre 48 atas do Copom e o Focus (862 chunks), exposto como API (FastAPI + Docker), com eval harness — golden set + LLM-as-judge com self-consistency + gate que falha se a qualidade regride — e observability de custo, latência e tokens por request. Motor implementado: gate em 1,000 com zero alucinações, 31 testes verdes."
 image: "copom-rag-service-capa.png"
 execute:
   eval: false
   echo: true
 ---
 
-![COPOM RAG Service — RAG servido como API, com eval harness e observability](copom-rag-service-capa.png){width=100%}
+![Arquitetura em quatro faixas: ingestão e indexação (batch) → retrieval híbrido com rerank (por request) → geração com contrato de saída → eval harness, o código-âncora](copom-rag-service-capa.png){width=100%}
 
-::: {.callout-note}
-## 🚧 Projeto em desenvolvimento
+::: {.callout-important}
+## Estado atual — motor implementado, gate no melhor ponto
 
-Esta é a **ficha técnica** de um projeto em construção ativa. O esqueleto é
-rodável — imports corretos, contratos (Pydantic) definidos, fluxo do eval
-harness completo —, mas o **retrieval real e as chamadas ao LLM estão marcados
-como `TODO` explícitos**. O objetivo desta ficha é registrar a **arquitetura e a
-tese de engenharia** do projeto antes da implementação completa.
+O **motor está completo e roda de ponta a ponta**: retrieval híbrido real
+(BM25 + denso + RRF + rerank) sobre **862 chunks** — 814 de **48 atas completas**
+(reuniões 232–279) e 48 do **Focus** —, geração via Claude e juiz LLM com
+*self-consistency*.
+
+| Verificação | Resultado |
+|---|---|
+| Eval harness (`--samples 3`, API real) | **8/8 casos com nota 1,000** |
+| Alucinações | **0** |
+| *Gate* (threshold $0{,}70$) | **PASSOU** |
+| Suíte de testes | **31 testes verdes** |
+
+O eval também roda **offline e sem custo**: sem `ANTHROPIC_API_KEY`, geração e
+juiz degradam para modos determinísticos (extrativo / heurístico), e a
+degradação é **registrada no trace** (`degraded: true`) em vez de silenciada.
+
+**O que ainda falta:** plugar o gate como *GitHub Action* a cada PR (hoje ele
+roda por linha de comando), atas anteriores à reunião 232, exportador
+OpenTelemetry/Prometheus de fato (hoje o sink é JSONL, que é o formato que eles
+consomem) e embeddings via *provider* (hoje há *fallback* local).
 :::
 
 ## Visão Geral
@@ -43,13 +58,16 @@ convicção direcional continua sendo do economista —, mas de dar ao *research
 mesa um copiloto de leitura testado e auditável. A seção de
 [Motivação](#motivação) detalha os públicos-alvo e a tese de negócio.
 
-O diferencial do projeto, contudo, **não é o RAG em si** — é a **engenharia de
-qualidade ao redor dele**:
+O diferencial do projeto, contudo, **não é o RAG em si** — montar um RAG é
+tarefa de uma tarde. É a **engenharia de qualidade ao redor dele**:
 
-- um **eval harness** com *golden set*, **LLM-as-judge** e um **gate de CI** que
-  **falha (exit 1)** se a qualidade média regride;
-- **observability** de custo, latência e *tokens* medidos **por request**;
+- um **eval harness** com *golden set*, **LLM-as-judge** com *self-consistency*
+  e um **gate** que **falha (exit 1)** se a qualidade média regride;
+- **observability** de custo, latência, *tokens* e **degradação** por *request*;
 - empacotamento como **API + Docker**, pronto para subir com um comando.
+
+> **Repositório:** [github.com/vitorwilher/copom-rag-service](https://github.com/vitorwilher/copom-rag-service) ·
+> **Site do projeto:** [vitorwilher.github.io/copom-rag-service](https://vitorwilher.github.io/copom-rag-service/)
 
 ::: {.callout-tip}
 ## Tese central
@@ -132,10 +150,10 @@ de **engenharia de LLM / RAG aplicado à comunicação de bancos centrais**.
 | Fase | Aplicação no Projeto |
 |---|---|
 | **1. Entendimento do Negócio** | Responder perguntas sobre política monetária com fundamentação auditável (fontes citadas) e sem alucinação numérica; definir qualidade como contrato verificável em CI |
-| **2. Entendimento dos Dados** | Atas do Copom (API BCB) + boletim Focus; textos com jargão de política monetária (meta de inflação, hiato do produto, cenários) e números sensíveis (Selic, projeções) |
-| **3. Preparação dos Dados** | *Chunking* das atas/Focus, indexação **esparsa** (BM25) e **densa** (embeddings) em *vector store* (ChromaDB ou pgvector) |
-| **4. Modelagem** | **Retrieval híbrido** BM25 + denso com **reranking** → *prompt* → geração via Claude, com saída estruturada (resposta + fontes) via Pydantic |
-| **5. Avaliação** | **Eval harness**: *golden set* + **LLM-as-judge** (score $0$–$1$ + *rationale*) + **gate de CI** que falha em regressão de qualidade |
+| **2. Entendimento dos Dados** | 48 atas completas (232–279) + Focus ancorado à véspera de cada reunião; jargão de política monetária e números sensíveis (Selic, projeções) |
+| **3. Preparação dos Dados** | *Chunking* em 862 unidades com proveniência; indexação **esparsa** (BM25) e **densa** (embeddings + cosseno), ambas enriquecidas com ata/reunião/data |
+| **4. Modelagem** | **Retrieval híbrido** BM25 + denso → **RRF** → **reranker** → *prompt* → geração via Claude, com saída estruturada (resposta + fontes) via Pydantic |
+| **5. Avaliação** | **Eval harness**: *golden set* de fatos ancorados e abstenções + **LLM-as-judge** com *self-consistency* + **gate** que falha em regressão |
 | **6. Implantação** | **API FastAPI + Docker/compose**; **observability** de custo/latência/*tokens* por *request* |
 
 ---
@@ -144,31 +162,42 @@ de **engenharia de LLM / RAG aplicado à comunicação de bancos centrais**.
 
 ```{mermaid}
 flowchart LR
+  subgraph Ingestao["Ingestão — API do BCB"]
+    ATAS[(48 atas completas<br>reuniões 232–279)] --> ING["ingest.py"]
+    FOCUS[(Focus na véspera<br>de cada reunião)] --> ING
+    ING --> CORP[("corpus.jsonl<br>862 chunks<br>814 atas + 48 Focus")]
+  end
+
   Q[POST /ask<br>pergunta] --> API[FastAPI]
   API --> PIPE[RAGPipeline]
 
-  subgraph Retrieval híbrido
-    PIPE --> BM25[BM25<br>esparso]
-    PIPE --> DENSE[Denso<br>vector store]
-    BM25 --> FUSE[Fusão RRF]
+  subgraph Retrieval["Retrieval híbrido"]
+    CORP --> IDX["indexing_text()<br>+ ata · reunião · data"]
+    IDX --> BM25["BM25<br>esparso"]
+    IDX --> DENSE["Denso<br>embeddings + cosseno"]
+    PIPE --> BM25
+    PIPE --> DENSE
+    BM25 --> FUSE["Fusão RRF"]
     DENSE --> FUSE
-    FUSE --> RR[Reranker]
+    FUSE --> RR["Reranker<br>boost de decisão condicional"]
   end
 
-  RR --> GEN[LLM Claude<br>gerar resposta + fontes]
+  RR --> GEN["Claude Haiku 4.5<br>resposta + fontes"]
+  GEN -->|"sem chave"| EXT["fallback extrativo<br>degraded: true"]
   GEN --> API
   API --> R[resposta + fontes]
 
-  subgraph CI e Qualidade
-    GS[(golden_set.jsonl)] --> RUN[run_eval.py]
+  subgraph Qualidade["Eval harness — o código-âncora"]
+    GS[("golden_set.jsonl<br>5 fatos + 3 abstenções")] --> RUN["run_eval.py"]
     RUN --> PIPE2[RAGPipeline]
-    PIPE2 --> JUDGE[LLM-as-judge<br>score 0-1]
-    JUDGE --> GATE{média maior ou igual<br>ao threshold?}
-    GATE -->|não| FAIL[exit 1 — CI falha]
-    GATE -->|sim| PASS[exit 0]
+    PIPE2 --> JUDGE["Claude Sonnet 5<br>self-consistency (N=3)<br>mediana + voto maioria"]
+    JUDGE --> GATE{"média ≥ threshold?"}
+    GATE -->|não| FAIL["exit 1 — reprova"]
+    GATE -->|sim| PASS["exit 0 — passa"]
   end
 
-  API -. custo / latência / tokens .-> OBS[obs/tracing]
+  API -. custo · latência · tokens · degraded .-> OBS["obs/tracing<br>sink JSONL"]
+  JUDGE -. .-> OBS
 ```
 
 ---
@@ -221,14 +250,15 @@ documentadas espalhadas pelo *chat* do time.
 
 ### 1.4 Critérios de sucesso
 
-| Critério | Meta |
-|---|---|
-| Fundamentação | Toda resposta cita ao menos uma fonte (ata/Focus) |
-| Qualidade agregada | Média do LLM-as-judge $\geq$ *threshold* (default $0{,}70$) |
-| Gate de regressão | CI falha (exit 1) quando a média cai abaixo do *threshold* |
-| Abstenção | Sem informação no contexto, o serviço declara "não sei" — nunca inventa números |
-| Observabilidade | Custo, latência e *tokens* registrados por *request* |
-| Reprodutibilidade | `docker compose up` sobe a API; `python -m eval.run_eval` roda o gate |
+| Critério | Meta | Situação |
+|---|---|---|
+| Fundamentação | Toda resposta cita ao menos uma fonte (ata/Focus) | ✅ atendido |
+| Qualidade agregada | Média do LLM-as-judge $\geq$ *threshold* ($0{,}70$) | ✅ **1,000** |
+| Ausência de alucinação | Zero números inventados no *golden set* | ✅ **0** |
+| Abstenção | Sem informação no contexto, declarar "não sei" | ✅ 3 casos testados |
+| Gate de regressão | Exit 1 quando a média cai abaixo do *threshold* | ✅ implementado · ⏳ falta plugar no CI |
+| Observabilidade | Custo, latência e *tokens* por *request* | ✅ + sink JSONL e flag `degraded` |
+| Reprodutibilidade | `docker compose up` sobe a API; um comando roda o gate | ✅ + 31 testes verdes |
 
 ---
 
@@ -262,24 +292,57 @@ Daí a opção por **retrieval híbrido**.
 ### 3.1 Ingestão e *chunking*
 
 As atas e o Focus são coletados via API do BCB, limpos e segmentados em *chunks*
-com metadados de proveniência (identificador da fonte, data da reunião, seção).
-O identificador de fonte (ex.: `ata_265`, `focus_2026-07-11`) é o que permite a
+com metadados de proveniência (identificador da fonte, número da reunião, data).
+O identificador de fonte (ex.: `ata_232`, `focus_2020-08-05`) é o que permite a
 **citação rastreável** na resposta final.
+
+O corpus versionado tem **862 chunks**:
+
+| Origem | Chunks | Detalhe |
+|---|---:|---|
+| **Atas do Copom** | 814 | 48 atas **completas** (seções A+B+C), reuniões 232–279 |
+| **Boletim Focus** | 48 | 1 chunk por reunião — mediana de Selic, IPCA, PIB e câmbio **vigente na véspera** |
+
+A ancoragem do Focus **na véspera de cada reunião** é deliberada: é a expectativa
+que o comitê tinha diante de si ao decidir, e é ela que permite responder à
+pergunta que a mesa realmente faz — *qual era o gap entre o que o mercado
+esperava e o que o Copom fez?*
 
 ### 3.2 Indexação em dois níveis
 
-| Índice | Tecnologia | Sinal |
+| Índice | Implementação | Sinal |
 |---|---|---|
-| **Esparso** | `rank-bm25` | Correspondência léxica de termos técnicos |
-| **Denso** | ChromaDB ou pgvector | Similaridade semântica (embeddings) |
+| **Esparso** | BM25 próprio, com tokenização e *stopwords* pt-BR | Correspondência léxica de termos técnicos |
+| **Denso** | Embeddings + similaridade de cosseno, em memória | Similaridade semântica (paráfrases) |
+
+O componente denso usa **degradação graciosa** em três níveis: OpenAI
+(`text-embedding-3-small`) se houver `OPENAI_API_KEY`, Google
+(`text-embedding-004`) se houver `GOOGLE_API_KEY`, e por fim um **embedding
+local determinístico** por *hashing trick* + TF, sem dependência externa nem
+download de modelo.
+
+::: {.callout-note}
+## Por que não há *vector store* nesta versão
+
+Com **862 chunks**, um índice em memória resolve — a busca é instantânea e o
+corpus inteiro cabe folgado. Introduzir ChromaDB ou pgvector aqui adicionaria
+uma dependência de infraestrutura, um serviço para operar e um estado para
+sincronizar, **sem ganho mensurável de qualidade ou latência**.
+
+A troca vale a pena quando o corpus crescer uma ou duas ordens de grandeza
+(atas desde a reunião 21, relatórios trimestrais, comunicados). A interface do
+`DenseRetriever` isola essa decisão: trocar o backend não toca no pipeline.
+:::
 
 ### 3.3 Decisões de preparação
 
 | Decisão | Valor | Justificativa |
 |---|---|---|
-| *Vector store* | ChromaDB (local) ou pgvector | Local para desenvolvimento; pgvector para produção com Postgres |
+| Índice denso | Em memória | 862 chunks não justificam operar um *vector store* |
 | Metadado de fonte | Obrigatório por *chunk* | Sem ele não há citação auditável |
+| Proveniência na indexação | Prefixo com ata + data (ISO e por extenso) | Faz "ata 279" e "junho de 2026" casarem com o chunk certo |
 | Fusão de candidatos | Reciprocal Rank Fusion | Combina BM25 + denso sem calibrar escalas de score |
+| Atas | Seções **A+B+C** completas | O eval pergunta pela decisão, que está na seção C |
 
 ---
 
@@ -290,7 +353,7 @@ O identificador de fonte (ex.: `ata_265`, `focus_2026-07-11`) é o que permite a
 O `HybridRetriever` (`src/rag/retriever.py`) orquestra três componentes:
 
 1. **`BM25Retriever`** — top-k por score BM25 (esparso);
-2. **`DenseRetriever`** — top-k por similaridade semântica no *vector store*;
+2. **`DenseRetriever`** — top-k por similaridade de cosseno sobre embeddings;
 3. **`Reranker`** — reordena o conjunto fundido (RRF) pelos `top_n` mais
    relevantes à pergunta (cross-encoder ou reranking via LLM).
 
@@ -310,6 +373,12 @@ class RAGAnswer(BaseModel):
 A saída estruturada via **Pydantic** garante que a API sempre devolva um objeto
 com `answer` **e** `sources`.
 
+Sem `ANTHROPIC_API_KEY`, o pipeline **degrada para um modo extrativo
+determinístico** em vez de falhar: devolve os trechos recuperados, marca
+`mode="extractive_fallback"` e `degraded=True` no *trace*. Isso é o que permite
+rodar a suíte inteira e o eval em CI **sem custo e sem segredo configurado** —
+com a degradação visível, não disfarçada de resposta normal.
+
 ### 4.3 API
 
 O endpoint `POST /ask` (`src/app/main.py`) recebe `{"question": "..."}` e
@@ -325,12 +394,28 @@ Esta é a fase que define o card. A qualidade das respostas é tratada como um
 
 ### 5.1 Golden set
 
-`src/eval/golden_set.jsonl` reúne **perguntas reais sobre o Copom** com resposta
-esperada (gabarito) e *tags*. Exemplos: o objetivo do regime de metas, o que é
-um tom *hawkish*, a relação entre Focus e Copom, a diferença entre meta Selic e
-Selic efetiva, o papel do hiato do produto — e um caso deliberado de
-**abstenção** (o que o serviço deve fazer quando a resposta não está no
-contexto).
+`src/eval/golden_set.jsonl` reúne **8 perguntas com gabarito e *tags***. A
+escolha do que perguntar é uma decisão de projeto, não um detalhe:
+
+::: {.callout-tip}
+## O eval mede fidelidade à ata, não conhecimento de macroeconomia
+
+Um *golden set* conceitual ("o que é um tom *hawkish*?") mediria a competência
+do **modelo de base** — e um LLM moderno acerta isso sem ler ata nenhuma. Não é
+o que interessa aqui. O usuário deste serviço **já domina os conceitos**; o que
+ele quer saber é **o que a ata específica disse**.
+
+Por isso o conjunto tem **5 fatos ancorados em atas nomeadas** — decisão de
+juros da ata 279 (junho/2026), da 277 (março/2026), a alta da 268
+(janeiro/2025), o balanço de riscos e a caracterização do hiato do produto — e
+**3 casos de abstenção**: uma projeção que não está nas atas, uma pergunta fora
+de escopo e um teste explícito de comportamento ("o que fazer quando a resposta
+não estiver nas atas recuperadas").
+
+As abstenções valem tanto quanto os acertos: num domínio onde um número
+inventado vira posição de centenas de milhões em DI, **recusar é a resposta
+certa** — e precisa ser testado como tal.
+:::
 
 ### 5.2 LLM-as-judge
 
@@ -360,29 +445,86 @@ domínio.
 6. **sai com exit code 1** se a média ficar abaixo do *threshold*.
 
 ```bash
-python -m eval.run_eval                  # threshold padrão (0.70)
-python -m eval.run_eval --threshold 0.75 # gate customizado
+python -m eval.run_eval                    # threshold padrão (0.70)
+python -m eval.run_eval --threshold 0.75   # gate customizado
+python -m eval.run_eval --samples 3        # self-consistency do juiz
 ```
 
-Plugado no CI (uma *GitHub Action* a cada PR), esse exit code **bloqueia o merge**
-quando a qualidade regride.
+O exit code é o que torna isso um *gate* e não um relatório: plugado numa
+*GitHub Action* a cada PR, ele **bloqueia o merge** quando a qualidade regride.
+Essa amarração ao CI é o passo que falta — hoje o gate roda por linha de
+comando, com o mesmo contrato, mas a decisão de barrar o merge ainda é manual.
 
-::: {.callout-note}
-## Por que o eval reprova por padrão (e isso é correto)
+O gate saiu de **0,76 para 1,000** ao longo do desenvolvimento. Vale registrar
+o que produziu esse ganho, porque nenhuma das três decisões é sobre "melhorar o
+prompt" — todas são de **engenharia de recuperação e de medição**.
 
-Enquanto o pipeline for *stub*, o juiz retorna score $0{,}0$ e o gate **reprova**.
-Isso é intencional: **um sistema vazio deve falhar o gate**. O eval só passa a
-"passar" quando o retrieval e a geração reais forem conectados e produzirem
-respostas de fato boas — exatamente o comportamento que se quer de um *test
-harness*.
+### Retrieval ancorado na proveniência
+
+Perguntas do tipo *"a decisão da ata 279"* ou *"a reunião de junho de 2026"*
+traziam o chunk errado: o retriever via só o texto, e o número da ata não está
+escrito no corpo dela. A correção foi indexar cada chunk **com sua
+proveniência** — identificador, número da reunião e data em ISO **e por
+extenso**:
+
+```python
+def indexing_text(chunk: RetrievedChunk) -> str:
+    meta = chunk.metadata or {}
+    reuniao = meta.get("meeting", "")
+    data = meta.get("data", "")
+    extenso = _data_por_extenso(data)
+    return f"{chunk.source} reunião {reuniao} {data} {extenso} {chunk.text}"
+```
+
+O `.text` retornado permanece **limpo**, sem o prefixo — a proveniência serve
+para *encontrar* o chunk, não para poluir a citação exibida.
+
+### Juiz estabilizado por *self-consistency*
+
+Um juiz LLM chamado uma vez por caso tem variância suficiente para fazer o gate
+oscilar entre execuções sem que nada no código tenha mudado — o pior tipo de
+teste, o que falha por acaso. `Judge(samples=N)` avalia cada caso **N vezes**
+(default 3) e agrega por **mediana da nota** (robusta a um *outlier*) e **voto
+de maioria** na flag de alucinação. A justificativa reporta a dispersão, então
+um caso instável fica visível em vez de escondido atrás da média.
+
+### O boost de decisão que sequestrava o Focus
+
+O reranker dá bônus a *chunks* que contêm o dado da decisão — o que ajuda em
+perguntas sobre juros e **atrapalha** em perguntas de mercado: *"o que o Focus
+esperava?"* trazia a ata em vez do chunk do Focus. A solução foi um conjunto de
+termos (`_MARKET_QUERY_TERMS`) que **desliga** o boost, deixando o chunk
+`focus_*` competir em pé de igualdade.
+
+::: {.callout-warning}
+## Uma nota de honestidade sobre o 1,000
+
+Nota máxima em **8 casos** é evidência de que o motor está afinado para o
+*golden set* atual — não de que o sistema é infalível. O conjunto é pequeno por
+ser feito à mão com gabarito verificado; expandi-lo para 30–50 casos, com
+adversariais, é o próximo passo natural, e a expectativa correta é que a média
+**caia** quando isso acontecer. Um gate que nunca reprova não está medindo nada.
 :::
 
 ### 5.4 Observability
 
 `src/obs/tracing.py` oferece um *context manager* `trace(...)` que mede
 **latência**, agrega **tokens** (entrada + saída) e estima **custo** em US$ a
-partir da tabela de preços do modelo, por *request*. É o instrumento que responde
-"quanto custa e quão rápido é cada resposta em produção".
+partir da tabela de preços do modelo, por *request*.
+
+Com `COPOM_TRACE_FILE`, cada *span* é gravado em **JSONL**, e
+`python -m obs.tracing <arquivo>` agrega a sessão por modelo e por *span*:
+
+```
+[trace] generate   model=claude-haiku-4-5  lat=2.564s  tok_in=2343  tok_out=165  cost=US$0.003168
+[trace] judge      model=claude-sonnet-5   lat=2.811s  tok_in=4055  tok_out=129  cost=US$0.014100
+```
+
+O campo que mais importa não é o custo: é o **`degraded`**. Quando o pipeline
+cai para o modo extrativo por falta de chave ou falha de API, isso fica
+**marcado no trace** em vez de silenciado — uma resposta pior produzida por
+degradação não pode passar por resposta normal. `summarize_traces` conta quantos
+*spans* degradaram na sessão.
 
 ---
 
@@ -391,8 +533,8 @@ partir da tabela de preços do modelo, por *request*. É o instrumento que respo
 O serviço é empacotado como **API FastAPI + Docker**:
 
 - `Dockerfile` — imagem `python:3.11-slim` com *healthcheck* no `/health`;
-- `docker-compose.yml` — sobe a API (e, opcionalmente, um Postgres + pgvector
-  como *vector store*);
+- `docker-compose.yml` — sobe a API; o corpus é versionado no repositório, então
+  não há serviço de banco a orquestrar nesta versão;
 - `uvicorn app.main:app` como *entrypoint*.
 
 ```bash
@@ -406,26 +548,32 @@ docker compose up --build
 ```
 COPOM_RAG_Service/
 │
-├── src/
-│   ├── app/main.py            # FastAPI, endpoint POST /ask (stub)
+├── src/                            # 1.675 linhas
+│   ├── app/main.py                 # FastAPI, endpoint POST /ask
 │   ├── rag/
-│   │   ├── retriever.py       # BM25 + denso + reranking (stubs de classe)
-│   │   └── pipeline.py        # orquestra retrieve → prompt → gerar (stub)
+│   │   ├── retriever.py            # BM25 + denso + RRF + rerank (433 linhas)
+│   │   ├── embeddings.py           # denso: provider (.env) ou fallback local
+│   │   ├── corpus.py               # corpus.jsonl → RetrievedChunk
+│   │   └── pipeline.py             # retrieve → prompt → gerar (Claude + fallback)
 │   ├── eval/
-│   │   ├── golden_set.jsonl   # perguntas reais do Copom + gabarito
-│   │   ├── judge.py           # LLM-as-judge → score [0,1] + rationale
-│   │   └── run_eval.py        # CORAÇÃO: roda golden set, agrega, gate exit 1
-│   └── obs/tracing.py         # context manager de custo/latência/tokens
+│   │   ├── golden_set.jsonl        # 5 fatos ancorados + 3 abstenções
+│   │   ├── judge.py                # LLM-as-judge + self-consistency
+│   │   └── run_eval.py             # CORAÇÃO: golden set → agrega → gate exit 1
+│   └── obs/tracing.py              # trace() + sink JSONL + summarize_traces
 │
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-├── .env.example
-├── CLAUDE.md
+├── scripts/
+│   ├── download_atas.py            # API do BCB → atas completas (desde a 232)
+│   ├── download_focus.py           # API Expectativas → Focus por reunião
+│   └── ingest.py                   # → data/corpus.jsonl
 │
-└── portfolio/                 # divulgação CRISP-DM
-    ├── copom-rag-service.qmd  # ESTE arquivo
-    └── _TEMPLATE.md
+├── data/corpus.jsonl               # 862 chunks (814 atas + 48 Focus), versionado
+├── tests/                          # 31 testes: retriever, pipeline, judge,
+│                                   # gate, tracing, ingestão do Focus
+│
+├── Dockerfile · docker-compose.yml · requirements.txt · .env.example
+│
+└── portfolio/
+    └── copom-rag-service.qmd       # ESTA ficha
 ```
 
 ---
@@ -436,13 +584,20 @@ COPOM_RAG_Service/
 |---|---|
 | **API** | FastAPI + uvicorn |
 | **Contratos / saída estruturada** | Pydantic v2 |
-| **Retrieval esparso** | `rank-bm25` |
-| **Retrieval denso** | ChromaDB (ou pgvector) |
-| **LLM (geração + juiz)** | Anthropic Claude |
-| **Observability** | *context manager* próprio (`obs/tracing.py`) |
-| **Testes / CI** | pytest |
+| **Retrieval esparso** | BM25 próprio, tokenização e *stopwords* pt-BR |
+| **Retrieval denso** | Embeddings (OpenAI / Google / *hashing* local) + cosseno em memória |
+| **Fusão e reordenação** | Reciprocal Rank Fusion + reranker com *boost* condicional |
+| **Geração** | Claude Haiku 4.5 (com *fallback* extrativo determinístico) |
+| **LLM-as-judge** | Claude Sonnet 5, *self-consistency* por mediana (com *fallback* heurístico) |
+| **Observability** | `trace()` próprio + sink JSONL + `summarize_traces` |
+| **Testes** | pytest (31 testes) |
 | **Empacotamento** | Docker + docker-compose |
 | **Ambiente** | `python-dotenv` |
+
+A separação de modelos é deliberada: **Haiku gera** (barato, rápido, é o que
+roda a cada request) e **Sonnet julga** (mais criterioso, roda só no eval). Nos
+traces da última execução, a geração custou ~US$ 0,003 por resposta contra
+~US$ 0,014 por avaliação do juiz — a assimetria é o ponto.
 
 ---
 
@@ -451,7 +606,8 @@ COPOM_RAG_Service/
 ### Pré-requisitos
 
 - Python 3.11+
-- Chave de API da Anthropic
+- Chave de API da Anthropic — **opcional**: sem ela, geração e juiz degradam
+  para modos determinísticos e o eval roda offline, sem custo
 - Docker (opcional)
 
 ### Instalação
@@ -464,35 +620,59 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env   # edite com sua ANTHROPIC_API_KEY
+cp .env.example .env   # opcional: ANTHROPIC_API_KEY
+```
+
+### Ingestão (o corpus já vem versionado)
+
+```bash
+python scripts/download_atas.py    # API do BCB → atas completas
+python scripts/download_focus.py   # API Expectativas → Focus por reunião
+python scripts/ingest.py           # → data/corpus.jsonl
 ```
 
 ### Subir a API
 
 ```bash
-cd src
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000   # POST /ask
 ```
 
 ### Rodar o eval harness (o gate)
 
 ```bash
-cd src
-python -m eval.run_eval
+PYTHONPATH=src python -m eval.run_eval --samples 3
+```
+
+### Testes e observabilidade
+
+```bash
+PYTHONPATH=src python -m pytest -q            # 31 testes
+
+# Grava cada span em JSONL e agrega custo/latência/tokens
+COPOM_TRACE_FILE=traces.jsonl PYTHONPATH=src python -m eval.run_eval
+PYTHONPATH=src python -m obs.tracing traces.jsonl
 ```
 
 ---
 
 ## Próximos Passos
 
-1. **Ingestão** — coletar e *chunkar* atas do Copom (API BCB) e o Focus; indexar em BM25 + *vector store*.
-2. **Retrieval real** — implementar BM25, denso e fusão RRF + reranking.
-3. **Geração** — conectar o Claude no pipeline com saída estruturada (resposta + fontes).
-4. **LLM-as-judge real** — chamada ao Claude com *schema* Pydantic de `JudgeVerdict`.
-5. **CI** — *GitHub Action* rodando `run_eval` a cada PR, bloqueando merge em regressão.
-6. **Observability** — exportar métricas do *tracing* para *backend* (OpenTelemetry / Langfuse / Prometheus).
-7. **Golden set** — expandir para 30–50 perguntas, incluindo casos adversariais e de abstenção.
-8. **Avaliação de retrieval** — métricas de recuperação (recall@k, MRR) além do juiz de resposta final.
+1. **Gate no CI** — *GitHub Action* rodando `run_eval` a cada PR e bloqueando o
+   merge em regressão. É a peça que falta para o contrato deixar de depender de
+   disciplina manual; tudo o que ela precisa (exit code, threshold, modo
+   offline sem custo) já está pronto.
+2. **Golden set maior** — expandir para 30–50 perguntas, com casos adversariais
+   e mais abstenções. Com 8 casos, o 1,000 diz menos do que parece.
+3. **Avaliação de *retrieval*** — medir recall@k e MRR, separando "não achou o
+   trecho" de "achou e respondeu mal". Hoje o juiz mede só a resposta final, e
+   as duas falhas se confundem.
+4. **Atas anteriores à 232** — a API do BCB lista desde a reunião 21; ampliar a
+   janela histórica.
+5. **Exportador OpenTelemetry / Prometheus** — hoje o sink é JSONL, que é o
+   formato que esses *backends* consomem, mas falta o exportador de fato.
+6. **Embeddings via *provider*** — hoje o denso usa *fallback* local.
+7. **Gap Copom × Focus como ferramenta de primeira classe** — a pergunta que a
+   mesa mais faz merece um endpoint próprio, não uma pergunta em texto livre.
 
 ---
 
